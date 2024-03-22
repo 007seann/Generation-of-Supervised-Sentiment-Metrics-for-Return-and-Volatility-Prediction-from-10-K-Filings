@@ -11,7 +11,7 @@ Created on Sat Jan 6 2024
     
 # Specify the path to your CSV file
 QQQfirms_csv_file_path = "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv"
-risk_factors_path = '/Users/apple/PROJECT/Code_4_10k/risk_factors'
+files_path = '/Users/apple/PROJECT/Code_4_10k/fillings'
 
 firms_df = pd.read_csv(QQQfirms_csv_file_path)
 firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
@@ -28,7 +28,7 @@ def import_file(file_dir):
 
 for symbol, cik in firms_dict.items():
     df = pd.DataFrame(columns = columns)
-    cik_path = os.path.join(risk_factors_path, cik)
+    cik_path = os.path.join(files_path, cik)
     if os.path.exists(cik_path):
         for filename in os.listdir(cik_path):
             date = filename.split('.')[0]  
@@ -45,7 +45,7 @@ for symbol, cik in firms_dict.items():
                 # Append the row to the DataFrame
                 df = pd.concat([df, pd.DataFrame([row_data])], ignore_index=True)
         folder = 'company_df'        
-        folder_path = os.path.join(risk_factors_path, folder)
+        folder_path = os.path.join(files_path, folder)
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 

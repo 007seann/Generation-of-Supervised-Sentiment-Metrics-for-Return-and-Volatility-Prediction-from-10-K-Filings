@@ -27,7 +27,7 @@ from collections import Counter
 from tqdm import tqdm
 from dateutil.parser import parse
 
-def reader(file_name, file_loc='/Users/apple/PROJECT/Code_4_10k/risk_factors'):
+def reader(file_name, file_loc):
     # df = pd.read_csv(file_dir)
     df = pd.read_csv(f'{file_loc}/{file_name}', header = 0)
     # df = df.drop(df.columns[0], axis = 1) # Drop index column

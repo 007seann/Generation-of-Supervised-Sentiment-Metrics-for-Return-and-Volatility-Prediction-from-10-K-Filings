@@ -118,11 +118,11 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
     if pprint:
         print(f'{round((s_hat>0).sum()/len(s_hat)*100, 1)}% of reports have at least one sent-charged word')
     D_hat = D_title.div(s_hat * (s_hat>0) + 1 * (s_hat == 0), axis=0)
+
     
     # Estimating sentiment scores p_hat
     if vol_q:
         p_hat = (ts - ts.min())/(ts.max() - ts.min())
-        print('New p_hat')
     else:
         temp = ts.argsort()
         ranks = np.empty_like(temp)
@@ -144,7 +144,7 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
 
 def predict_sent(model, arts, llambda):
     """
-    Predicts a sentiment score for a new report given a trained model
+    Predicts a sentiment score for a 10-K filling given a trained model
 
     Parameters
     ----------
@@ -212,7 +212,7 @@ def loss(p_hat, yy):
 
 def loss_perc(p_hat, yy, marg = 0.01, pprint = True):
     """
-    Percentage of articles correctly esimated as high/low volatility.
+    Percentage of 10-k fillings correctly esimated as high/low volatility.
 
     Parameters
     ----------
@@ -246,6 +246,7 @@ def loss_perc(p_hat, yy, marg = 0.01, pprint = True):
     return (correct_high + correct_low)/N_scored, N_scored/N
 
 def kalman(p_series, n_iter=100, smooth=False):
+
     kf = KalmanFilter(transition_matrices = [[1]], observation_matrices = [[1]])
     kf = kf.em(p_series, n_iter=n_iter)
     if smooth:

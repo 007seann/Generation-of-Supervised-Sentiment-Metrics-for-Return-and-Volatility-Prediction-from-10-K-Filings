@@ -64,6 +64,7 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
         return np.log(xt/xt_1)
 
     ts = []
+    empty = []
     if extra_end:
         if window:
             end_date = str(dt.datetime.strptime(end_date, '%Y-%m-%d')+dt.timedelta(days=window + 3))[:10]
@@ -82,7 +83,12 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
                             start=start_date, 
                             end=end_date, 
                             progress=False)
+        if time_series.empty:
+            print(f'{stock} data is empty')
+            empty.append(cc)
+            continue
         ts.append(time_series)
+    comps = list(set(comps) - set(empty))
         
     def vol_proxy(ret, proxy):
         proxies = ['squared return','realized','daily-range', 'return']
@@ -167,29 +173,40 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
     
 
 def price_reader(comps, start_date, end_date):
-    
+
+    # firms_dict = {ticker : cik}
+    # comps = [cik]
     ts = []
-    
+    empty = []
     for cc in comps:
         stock = firms_dict[cc]
-        print(f'Downloading {stock} stock data')
-        time_series = yf.download(stock,
-                                start=start_date,
-                                end=end_date,
-                                progress=False)
-        ts.append(time_series)
-        
+        try:
+            print(f'Downloading {stock} stock data')
+            time_series = yf.download(stock,
+                                    start=start_date,
+                                    end=end_date,
+                                    progress=False)
+            if time_series.empty:
+                print(f'{stock} data is empty')
+                empty.append(cc)
+                continue
+            ts.append(time_series)
+        except Exception as e:
+            print(f'Error: {e}')
+            print(f'Could not download {stock} data')
+            pass
+    comps = list(set(comps) - set(empty))
     ret_list = []
     for cc in range(len(comps)):
         ret = ts[cc]['Open']
-        ret = ret/ret[0] * 100
+        # ret = ret/ret[0] * 100
         ret_list.append(ret.to_frame())
     df_ret = pd.concat(ret_list, axis=1)
     df_ret.columns = comps
     df_ret = df_ret.fillna(method='bfill')
     df_ret = df_ret.dropna()
     
-    return df_ret
+    return df_ret, comps
 
 """
 #%% Aligning to future returns

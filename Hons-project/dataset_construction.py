@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
                     '0001045810' : 'NVDA', '0001318605' : 'TSLA', '0001652044' : "GOOGL", '0001652044' : 'GOOG', '0000909832' : 'COST' }
 """
 
-# #%% READING ARTICLES AND COMBINING WITH VOL DATA
-# start_date = '2006-01-01'
-# end_date = '2023-12-31'
+#%% READING ARTICLES AND COMBINING WITH VOL DATA
+start_date = '2006-01-01'
+end_date = '2023-12-31'
 
 # # proxy = ['daily-range', 'return']# for time series
 
@@ -28,23 +28,26 @@ QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv"
 firms_df = pd.read_csv(QQQfirms_csv_file_path)
 firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
 firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
-firms_ciks = set(firms_df['CIK'])
+seen = set()
+firms_ciks = [cik for cik in firms_df['CIK'].tolist() if not (cik in seen or seen.add(cik))] 
+
 
 
 # Reach out to risk factor path
-risk_factors_path = '/Users/apple/PROJECT/Code_4_10k/risk_factors'
+files_path = '/Users/apple/PROJECT/Code_4_10k/fillings'
 folder = 'company_df'     
-folder_path = os.path.join(risk_factors_path, folder)
+folder_path = os.path.join(files_path, folder)
 if not os.path.exists(folder_path):
     os.makedirs(folder_path)
 
 # Construct companies' dataframe
+num = 0
 for cik in firms_ciks:
     print(f'============= Processing {cik} =============')
     for filename in os.listdir(folder_path):
         if filename.rsplit('.', 1)[0] == cik:
             filename = folder + '/' + filename
-            D_comp = reader(filename)
+            D_comp = reader(filename, file_loc=files_path)
             vol_comp = vol_reader(cik,start_date=start_date, end_date=end_date)
             # # Plotting (maybe remove from here)
             # fig,ax = plt.subplots()
@@ -65,33 +68,38 @@ for cik in firms_ciks:
             comb = comb[comb['_ret'].notna()]
             comb.reset_index(inplace=True)
             print("comb", comb)
-            path = "/Users/apple/PROJECT/Hons-project/data"
-            filename = f'df_{cik}.csv'
+            path = "/Users/apple/PROJECT/Hons-project/data/all"
+            if not os.path.exists(path):
+                os.makedirs(path)
+            filename = f'df_all_{cik}.csv'
             comb.to_csv(os.path.join(path, filename))
             
 # Concatenating dataframes
 save_file_path = "/Users/apple/PROJECT/Hons-project/data/"
-filename = "df_qqq"
+filename = "df_all_QQQ"
 first = True
 for cik in firms_ciks:
     print('Concatenating dataframes')
-    filepath = f'/Users/apple/PROJECT/Hons-project/data/df_{cik}.csv'
-    comb = pd.read_csv(filepath)
-    if first:
-        df_all = comb
-        first = False
+    filepath = f'/Users/apple/PROJECT/Hons-project/data/all/df_all_{cik}.csv'
+    if not os.path.exists(filepath):
+        continue
     else:
-        df_all = pd.concat([df_all, comb], axis=0)
-    print(f'=> Dimensions: {df_all.shape[0]} annual reports, {df_all.shape[1]-6} terms')
+        comb = pd.read_csv(filepath)
+        if first:
+            df_all = comb
+            first = False
+        else:
+            df_all = pd.concat([df_all, comb], axis=0)
+        print(f'=> Dimensions: {df_all.shape[0]} annual reports, {df_all.shape[1]-6} terms')
 df_all = df_all.reset_index()
 df_all.drop('Unnamed: 0', axis=1, inplace=True)
 df_all.drop('level_0', axis=1, inplace=True)
 df_all.fillna(0.0, inplace=True)
 df_all.to_csv(save_file_path + filename + '.csv')
 
-save_file_path = "/Users/apple/PROJECT/Hons-project/data/"
-filename = "df_qqq"
-df_all = pd.read_csv(save_file_path + filename + '.csv')
+# save_file_path = "/Users/apple/PROJECT/Hons-project/data/"
+# filename = "df_qqq"
+# df_all = pd.read_csv(save_file_path + filename + '.csv')
 #%% ALIGN WITH 3-DAY RETURN
 start_date = '2006-01-01'
 end_date = '2023-12-31'
@@ -135,5 +143,4 @@ df_all2 = df_all.copy()
 df_all2['_ret'] = df_add['n_ret']
 df_all2['_vol'] = df_add['n_vol']
 
-df_all2.to_csv(save_file_path + filename + '2' +'.csv')
-    
+df_all2.to_csv(save_file_path + filename + '_2' +'.csv')

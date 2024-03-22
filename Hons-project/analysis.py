@@ -35,9 +35,10 @@ import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
 import seaborn as sns
 import time
+import sys
 
 from model import train_model, predict_sent, loss, loss_perc, kalman
-from vol_reader_fun import vol_reader2, price_reader
+from vol_reader_fun import vol_reader2, price_reader, vol_reader
 
 
 
@@ -48,14 +49,50 @@ def adj_kappa(k, k_min = 0.85):
 start_date = '2006-01-01'
 end_date = '2023-12-31'
 # trn_window = ['2006-01-01', '2019-12-31']
+# trn_window = ['2006-01-01', '2023-12-31']
+# val_window = ['2020-01-01', '2023-12-31']
+
+trn_window = ['2006-01-01', '2020-12-31']
 val_window = ['2020-01-01', '2023-12-31']
-trn_window = ['2006-01-01', '2023-12-31']
+window = ['2006-01-01', '2023-12-31']
+# trn_window = ['2006-01-01', '2023-12-31']
+# val_window = ['2024-01-01', '2026-12-31']
 # comps = ['0000320193']
-comps = ['0000320193', '0000789019', '0001018724', "0001730168", "0001326801",
-                    '0001045810', '0001318605', '0001652044', '0000909832']
+QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/top10_QQQ_constituents.csv"
+firms_df = pd.read_csv(QQQfirms_csv_file_path)
+firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
+firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
+seen = set()
+firms_ciks = [cik for cik in firms_df['CIK'].tolist() if not (cik in seen or seen.add(cik))] 
+
+# Weights
+comp_to_weight_value = {
+    '0000320193': 7.44,  # Apple
+    '0000789019': 8.60,  # Microsoft
+    '0001018724': 5.17,  # Amazon
+    '0001730168': 4.80,   # Broadcom
+    '0001326801': 5.12,   # Meta (formerly Facebook)
+    '0001045810': 6.48,   # NVIDIA
+    '0001318605': 2.43,   # Tesla - 2019-12-31: 75.71 B, 2020-12-31: 668.09 B
+    '0001652044': 4.43, # Alphabet (Google)
+    '0000909832': 2.54    # Costco
+}
+
+
+# QQQ_weights_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_weights.csv"
+# QQQ_weight_df = pd.read_csv(QQQ_weights_file_path)
+
+# comp_to_weight_value = pd.Series(QQQ_weight_df.Weight.values, index=QQQ_weight_df.CIK).to_dict()
+# comp_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.items()}
+
+
+
+
+firms_ciks = ['0001045810']
 #%% READ ALL DATA
-NAME = 'Technology Sector '
-DATA = 'top10_2'
+NAME = 'Nvidia'
+DATA = '0001045810'
+PORT = 'equal' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
 fig_loc = f'/Users/apple/PROJECT/Hons-project/figures_df_{DATA}'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
@@ -76,7 +113,8 @@ alpha_low = alpha_high
 llambda = 0.1 # Prenalty to shrink estimated sentiment towards 0.5 (i.e neutral)
 
 # Train model
-df_trn = df_all.sort_index()[:'2023-12-31']
+df_trn = df_all.sort_index()[:f'{trn_window[1]}']
+df_val = df_all.sort_index()[val_window[0]:val_window[1]]
 t0 = time.time()
 for dep in ['_ret', '_vol']:
     
@@ -85,25 +123,31 @@ for dep in ['_ret', '_vol']:
         S_pos_ret, S_neg_ret = mod[0][:alpha_high], mod[0][alpha_high:]
         mod_ret = mod
     else:
-        mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = 0.8)
+        mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = 0.65)
         S_pos_vol, S_neg_vol = mod[0][:alpha_high], mod[0][alpha_high:]
         mod_vol = mod
         mod_vol2 = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = None)
     
-    # Define test set (now equal to train set)
-    test_set = df_trn
-    test_arts = test_set.drop(columns= ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
-    test_y = test_set[dep]
+    # Make predictions on training data
+    train_set = df_trn
+    train_arts = train_set.drop(columns= ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+    train_y = train_set[dep]
+
+    preds = predict_sent(mod, train_arts, llambda)
     
-    # Make predictions
-    print('mod', mod)
-    preds = predict_sent(mod, test_arts, llambda)
-    print('preds', preds)
+    # # Define test set 
+    # test_set = df_val
+    # test_arts = test_set.drop(columns= ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+    # test_y = test_set[dep]
+    # # Make predictions
+    # test_preds = predict_sent(mod, test_arts, llambda)
+    
     print(f'All estimated sentiments in [{round(preds.min(),3)},{round(preds.max(), 3)}]')
-    ll = loss(preds, test_y)
+    ll = loss(preds, train_y)
     print(f'Loss: {round(ll,4)} (Benchmark = 0.25)')
-    ll2 = loss_perc(preds, test_y, marg=0.02)[0]
+    ll2 = loss_perc(preds, train_y, marg=0.02)[0]
     print(f'Correct (%): {round(ll2,4)} (Benchmark = 0.5)')
+    print('\n')
     
     if dep == '_ret':
         mod_sent_ret = pd.Series(preds, index=df_trn.index)
@@ -113,7 +157,7 @@ for dep in ['_ret', '_vol']:
 
 t1 = time.time()
 print(f'Total tranining time: {t1-t0}')
-
+# sys.exit("Error message")
 #%% Most Impractful Words
 ## print
 def impactful_words(mod):
@@ -176,6 +220,7 @@ plt.show()
 # Vol sentiments
 print(f'% of neutral sentiments VOL: {round((mod_sent_vol == 0.5).sum()/len(mod_sent_vol) * 100, 2)}')
 mod_avg_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
+print('mod_avg_vol', mod_avg_vol)
 mod_kal_vol = kalman(mod_avg_vol, smooth=True)
 plt.plot(mod_avg_vol, label = 'unfiltered')
 plt.plot(mod_kal_vol, '--', label = 'filtered')
@@ -188,9 +233,11 @@ plt.savefig(f'{fig_loc}/vol_filter', dpi=500)
 plt.show()
 
 # LM sentiments
+
 assert all(lm_sent.index == df_all.index) and all(lm_sent['_cik'] == df_all['_cik'])
-lm_trn = lm_sent['_lm'].sort_index()[:'2023-12-31']
-print(lm_trn)
+print("length check", lm_sent['_lm'].sort_index())
+lm_trn = lm_sent['_lm'].sort_index()[:f'{trn_window[1]}']
+
 print(f'% of netural sentiments LM: {round(lm_trn == 0).sum()/len(lm_trn) * 100, 2}')
 lm_avg = lm_trn.groupby(lm_trn.index).mean()
 lm_avg = (lm_avg - lm_avg.min())/(lm_avg.max() - lm_avg.min())
@@ -205,23 +252,6 @@ plt.tight_layout()
 plt.savefig(f'{fig_loc}/LM_filter', dpi=500)
 plt.show()
 
-# Correlation
-print("mod_sent_ret", mod_sent_ret)
-print("mod_rec_ret", mod_sent_vol)
-print("lm_trn", lm_trn)
-sents = pd.concat([mod_sent_ret, mod_sent_vol, lm_trn], axis = 1)
-sents.columns = ['ret', 'vol', 'lm']
-print('p_hat correlation')
-print(sents.corr())
-
-sents_tilde = pd.concat([mod_kal_ret, mod_kal_vol, lm_kal], axis = 1)
-sents_tilde.columns = ['ret', 'vol', 'lm']
-sents_tilde.to_csv("sents_tilde.csv")
-print('p_tilde correlation')
-print(sents_tilde.corr())
-
-from scipy.stats.stats import pearsonr
-pearsonr(sents['ret'], sents['vol'])
 
 
 
@@ -235,12 +265,30 @@ pearsonr(sents['ret'], sents['vol'])
 # plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
 # plt.show()
 
+print('-----------comparision----------')
+# Plotting portfolio
+dfts, firms_ciks = price_reader(firms_ciks, trn_window[0], trn_window[1])
+
+print('--- Constructing portfolio ---')
+if PORT == 'equal':
+    port_val = dfts.mean(axis=1)
+    print("Hi you are using equal portfolio")
+
+    
+else:
+    if PORT == 'value':
+        port_weights = np.array([comp_to_weight_value[c] for c in firms_ciks])
+        port_weights = port_weights/sum(port_weights)
+        weight = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
+        port_val = dfts.dot(weight[0])
+        print("Hi you are using value portfolio")
+
 # Plotting
-dfts = price_reader(comps, trn_window[0], trn_window[1])
+# dfts = price_reader(firms_ciks, trn_window[0], trn_window[1])
 fig, ax = plt.subplots()
-ax.plot(dfts.mean(axis=1), color = 'silver', linestyle = 'dashed', label = 'QQQ Stock')
+ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{NAME} Stock')
 ax.set_xlabel("Date")
-ax.set_ylabel("QQQ Stock")
+ax.set_ylabel(f'{NAME} Stock')
 ax2 = ax.twinx()
 ax2.plot(mod_kal_ret, label = 'RET')
 ax2.plot(mod_kal_vol, label = 'VOL')
@@ -248,119 +296,114 @@ ax2.plot(lm_kal + 0.5 - lm_kal.mean(), label = "LM")
 ax2.set_ylabel('Sentiment')
 fig.legend(bbox_to_anchor = (0.33, 0.7))
 fig.autofmt_xdate(rotation=50)
-plt.title(f'{NAME} Sentiment Prediction')
-plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
+plt.title(f'{NAME} Sentiment Training')
+plt.savefig(f'{fig_loc}/{NAME} Sentiment Training', dpi=500)
 plt.show()
 
 
-# print('-----------comparision----------')
-# # Plotting portfolio
-# dfts = price_reader(comps, trn_window[0], trn_window[1])
-# port = 'equal'
+fig, ax = plt.subplots()
+ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{NAME} Stock')
+ax.set_xlabel('Date')
+ax.set_ylabel(f'{NAME} Stock')
+ax2 = ax.twinx()
+ax2.plot(mod_kal_ret, label = "RET" )
+ax2.plot(mod_kal_vol, label = "VOL" )
+ax2.plot(lm_kal, label = 'LM' )
+ax2.set_ylabel('Sentiment')
+fig.legend(bbox_to_anchor = (0.33, 0.7))
 
 
-# # Weights
-# comp_to_weight_value = {
-#     '0000320193': 1287,  # Apple
-#     '0000789019': 1200,  # Microsoft
-#     '0001018724': 920.22,  # Amazon
-#     '0001730168': 125,   # Broadcom
-#     '0001326801': 585.37,   # Meta (formerly Facebook)
-#     '0001045810': 144,   # NVIDIA
-#     '0001318605': 75.71,   # Tesla - 2019-12-31: 75.71 B, 2020-12-31: 668.09 B
-#     '0001652044': 921.13, # Alphabet (Google)
-#     '0000909832': 129.84    # Costco
-# }
-# print('--- Constructing portfolio ---')
-# if port == 'equal':
-#     port_val = dfts.mean(axis=1)
-#     print("Hi you are using equal portfolio")
-# else:
-#     if port == 'value':
-#         port_weights = np.array([comp_to_weight_value[c] for c in comps])
-#     port_weights = port_weights/sum(port_weights)
-#     weight = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
-#     port_val = dfts.dot(weight[0])
-#     print("Hi you are using value portfolio")
+# Correlation
 
-# fig, ax = plt.subplots()
-# ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = 'Portfolio')
-# ax.set_xlabel('Date')
-# ax.set_ylabel('Portfolio value')
-# ax2 = ax.twinx()
-# ax2.plot(mod_kal_ret, label = "RET" )
-# ax2.plot(mod_kal_vol, label = "VOL" )
-# ax2.plot(lm_kal, label = 'LM' )
-# ax2.set_ylabel('Sentiment')
-# fig.legend(bbox_to_anchor = (0.33, 0.7))
+port_val_aligned = port_val.reindex(mod_sent_ret.index)
+port_val_aligned.dropna(inplace=True)
+print('port_val', port_val_aligned)
+sents = pd.concat([mod_sent_ret, mod_sent_vol, lm_trn, port_val_aligned], axis = 1)
+sents.columns = ['ret', 'vol', 'lm', 'stock']
+print('p_hat correlation')
+print(sents.corr())
 
-# #%% ECONOMETRIC VALIDATION: LM & MODEL predicitons
-# print('--- Splitting data set ---')
-# df_sorted = df_all.sort_index()
-# df_trn = df_sorted[trn_window[0]:trn_window[1]]
-# df_val = df_sorted[val_window[0]:val_window[1]]
-# val_arts = df_val.drop(columns = ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+sents_tilde = pd.concat([mod_kal_ret, mod_kal_vol, lm_kal, port_val_aligned], axis = 1)
+sents_tilde.columns = ['ret', 'vol', 'lm', 'stock']
 
-# print('CONSTRUCTING lm PERDICTIONS')
-# preds_lm = lm_sent['_lm'].sort_index()[val_window[0]:val_window[1]]
-# df_plm = pd.Series(preds_lm, index=df_val.index).sort_index()
-# df_plm2 = df_plm.groupby(df_plm.index).mean()
-# lm_trn = lm_sent['_lm'].sort_index()[:'2019-12-31']
-# lm_avg = lm_trn.groupby(lm_trn.index).mean()
-# df_plm2 = (df_plm2 - lm_avg.min())/(lm_avg.max() - lm_avg.min())
-# df_plm3 = kalman(df_plm2).to_frame('lm')
+
+print('p_tilde correlation')
+print(sents_tilde.corr())
+
+from scipy.stats.stats import pearsonr
+corr = pearsonr(sents['ret'], sents['vol'])
+print('pearsonr', corr)
+
+
+#%% ECONOMETRIC VALIDATION: LM & MODEL predicitons
+print('--- Splitting data set ---')
+df_sorted = df_all.sort_index()
+df_trn = df_sorted[trn_window[0]:trn_window[1]]
+df_val = df_sorted[val_window[0]:val_window[1]]
+val_arts = df_val.drop(columns = ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+
+print('CONSTRUCTING lm PERDICTIONS')
+preds_lm = lm_sent['_lm'].sort_index()[val_window[0]:val_window[1]]
+df_plm = pd.Series(preds_lm, index=df_val.index).sort_index()
+df_plm2 = df_plm.groupby(df_plm.index).mean()
+lm_trn = lm_sent['_lm'].sort_index()[:f'{trn_window[1]}']
+lm_avg = lm_trn.groupby(lm_trn.index).mean()
+df_plm2 = (df_plm2 - lm_avg.min())/(lm_avg.max() - lm_avg.min())
+df_plm3 = kalman(df_plm2, smooth=True).to_frame('lm')
 # plt.plot(df_plm2)
-# plt.plot(df_plm3, '--')
-# plt.title('LM')
-# plt.xticks(rotation=50)
-# plt.show()
+plt.plot(df_plm3, '--')
+plt.title('LM')
+plt.xticks(rotation=50)
+plt.show()
 
-# df_phat = df_plm
-# df_ptil = df_plm3
+df_phat = df_plm
+df_ptil = df_plm3
 
-# # Input
-# for dep in ['ret', 'vol']:
-#     print(f'CONSTRUCTING {dep} PREDICTIONS')
-#     kappa = adj_kappa(0.90) # 90% quantile of the count distribution
-#     alpha_high = 100 # 50  words in both groups
-#     alpha_low = alpha_high
-#     llambda = 0.1
-#     trn_with_fut = False
+# Input
+for dep in ['ret', 'vol']:
+    print(f'CONSTRUCTING {dep} PREDICTIONS')
+    kappa = adj_kappa(0.90) # 90% quantile of the count distribution
+    alpha_high = 100 # 50  words in both groups
+    alpha_low = alpha_high
+    llambda = 0.1
+    trn_with_fut = False
     
-#     if trn_with_fut:
-#         depdep = f'_{dep}+1'
-#     else:
-#         depdep = f'_{dep}'
-#     print('--- Training model ---')
-#     if dep == 'ret':
-#         mod = train_model(df_trn, depdep, kappa, alpha_high, pprint = False)
-#     else:
-#         assert dep == 'vol', 'Wrong dependent variable name'
-#         mod = train_model(df_trn, depdep, kappa, alpha_high, pprint = False, vol_q=0.8)
+    if trn_with_fut:
+        depdep = f'_{dep}+1'
+    else:
+        depdep = f'_{dep}'
+    print('--- Training model ---')
+    if dep == 'ret':
+        mod = train_model(df_trn, depdep, kappa, alpha_high, pprint = False)
+    else:
+        assert dep == 'vol', 'Wrong dependent variable name'
+        mod = train_model(df_trn, depdep, kappa, alpha_high, pprint = False, vol_q=0.65)
         
-#     print('--- Making predictions ---')
-#     preds_val = predict_sent(mod, val_arts, llambda)
-#     df_preds = pd.Series(preds_val, index=df_val.index)
-#     df_preds = df_preds.sort_index()
-#     df_preds2 = df_preds.groupby(df_preds.index).mean()
+    print('--- Making predictions ---')
+    preds_val = predict_sent(mod, val_arts, llambda)
+    df_preds = pd.Series(preds_val, index=df_val.index)
+    df_preds = df_preds.sort_index()
+    df_preds2 = df_preds.groupby(df_preds.index).mean()
     
-#     news_counts = df_preds.groupby(df_preds.index).count().to_frame('volume')
+    news_counts = df_preds.groupby(df_preds.index).count().to_frame('volume')
     
-#     print('--- Smoothing ---')
-#     df_preds3 = kalman(df_preds2).to_frame('sent')
-#     plt.plot(df_preds2, label = 'averaged')
-#     plt.plot(df_preds3, '--', label='filtered')
-#     plt.xticks(rotation=30)
-#     plt.legend(loc = 'upper right')
-#     plt.xlabel('Date')
-#     plt.ylabel('Sentiment')
-#     plt.title(dep.upper())
-#     plt.savefig(f'{fig_loc}/{dep}_smoothing', dpi=500)
-#     plt.show()
+    print('--- Smoothing ---')
+    df_preds3 = kalman(df_preds2, smooth=True).to_frame('sent')
+    plt.plot(df_preds2, label = 'averaged')
+    plt.plot(df_preds3, '--', label='filtered')
+    plt.xticks(rotation=30)
+    plt.legend(loc = 'upper right')
+    plt.xlabel('Date')
+    plt.ylabel('Sentiment')
+    plt.title(dep.upper())
+    plt.savefig(f'{fig_loc}/{dep}_smoothing', dpi=500)
+    plt.show()
+    print('df_phat1', df_phat)
+    print('df_ptil1', df_ptil)
     
-#     df_phat = pd.concat([df_phat, df_preds], axis=1)
-#     df_ptil = pd.concat([df_ptil, df_preds3], axis=1)
-# df_phat.columns, df_ptil.columns = ["LM", "RET", "VOL"], ["LM", "RET", "VOL"]
+    df_phat = pd.concat([df_phat, df_preds], axis=1)
+    df_ptil = pd.concat([df_ptil, df_preds3], axis=1)
+
 
 
 
@@ -380,23 +423,96 @@ plt.show()
 # comp_to_weight_volume = {}
 # for c in comps:
 #     comp_to_weight_volume[c] = df_trn[df_trn['_cik'] == c].shape[0]/df_trn.shape[0]
+
+# Plotting
+dfts, firms_ciks = price_reader(firms_ciks, window[0], window[1])
+dfts_vol, _ = price_reader(firms_ciks, val_window[0], val_window[1])
+
+
+print('--- Constructing portfolio ---')
+if PORT == 'equal':
+    port_val = dfts.mean(axis=1)
+    port_vol_val = dfts_vol.mean(axis=1) 
+
+    print("Hi you are using equal portfolio")
     
-# # Plotting
-# dfts = price_reader(comps, val_window[0], val_window[1])
-# fig, ax = plt.subplots()
-# ax.plot(dfts.mean(axis=1), color = 'silver', linestyle = 'dashed', label = 'Portfolio')
-# ax.set_xlabel("Date")
-# ax.set_ylabel("Portfolio value")
-# ax2 = ax.twinx()
-# ax2.plot(df_ptil['RET'], label = 'RET')
-# ax2.plot(df_ptil['VOL'], label = 'VOL')
-# ax2.plot(df_ptil['LM'], label = "LM")
-# ax2.set_ylabel('Sentiment')
-# fig.legend(bbox_to_anchor = (0.33, 0.7))
-# fig.autofmt_xdate(rotation=50)
-# plt.title(f'{NAME} Sentiment Prediction')
-# plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
-# plt.show()
+else:
+    if PORT == 'value':
+        print("Hi you are using value portfolio")
+        port_weights = np.array([comp_to_weight_value[c] for c in firms_ciks])
+        port_weights = port_weights/sum(port_weights)
+        weight = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
+        port_val = dfts.dot(weight[0])
+        
+        port_weights = np.array([comp_to_weight_value[c] for c in firms_ciks])
+        port_weights = port_weights/sum(port_weights)
+        weight = pd.DataFrame(pd.Series(port_weights, index=dfts_vol.columns, name=0))
+        port_vol_val = dfts_vol.dot(weight[0])
+        
+
+port_val_aligned = port_vol_val.reindex(df_phat.index)
+port_val_aligned.dropna(inplace=True)
+
+df_phat = pd.concat([df_phat, port_val_aligned], axis=1)
+df_ptil = pd.concat([df_ptil, port_val_aligned], axis=1)
+df_phat.columns, df_ptil.columns = ["LM", "RET", "VOL", "STOCK"], ["LM", "RET", "VOL", "STOCK"]
+
+
+TEMP = 'Nvidia'
+fig, ax = plt.subplots()
+ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{TEMP} Stock')
+ax.set_xlabel('Date')
+ax.set_ylabel(f'{TEMP} Stock')
+ax2 = ax.twinx()
+ax2.plot(mod_kal_ret, label = "RET" )
+ax2.plot(mod_kal_vol, label = "VOL" )
+ax2.plot(lm_kal, label = 'LM' )
+ax2.set_ylabel('Sentiment')
+fig.legend(bbox_to_anchor = (0.33, 0.7))
+
+#%% ECONOMETRIC VALIDATION: LM & MODEL predicitons
+df_sorted = df_all.sort_index()
+df_trn = df_sorted[trn_window[0]:trn_window[1]]
+df_val = df_sorted[val_window[0]:val_window[1]]
+val_arts = df_val.drop(columns = ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+
+
+preds_lm = lm_sent['_lm'].sort_index()[val_window[0]:val_window[1]]
+df_plm = pd.Series(preds_lm, index=df_val.index).sort_index()
+df_plm2 = df_plm.groupby(df_plm.index).mean()
+lm_trn = lm_sent['_lm'].sort_index()[:f'{trn_window[1]}']
+lm_avg = lm_trn.groupby(lm_trn.index).mean()
+df_plm2 = (df_plm2 - lm_avg.min())/(lm_avg.max() - lm_avg.min())
+df_plm3 = kalman(df_plm2, smooth=True).to_frame('lm')
+# plt.plot(df_plm2)
+plt.plot(df_plm3, '--', color = '#2DA331')
+plt.title('LM')
+plt.xticks(rotation=50)
+plt.plot(df_ptil['RET'], '--', color = '#2178B6')
+plt.plot(df_ptil['VOL'], '--', color = '#FB7F11')
+plt.title(f'{NAME} Sentiment Prediction')
+plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
+plt.show()
+
+
+
+
+# Correlation
+
+
+
+print('validation_p_hat correlation')
+print(df_phat.corr())
+
+print('validation_p_tilde correlation')
+print(df_ptil.corr())
+
+from scipy.stats.stats import pearsonr
+corr = pearsonr(sents['ret'], sents['vol'])
+print('pearsonr', corr)
+
+
+
 
 # #%% VOL QUANTILE ANALYSIS
 # window = 5
