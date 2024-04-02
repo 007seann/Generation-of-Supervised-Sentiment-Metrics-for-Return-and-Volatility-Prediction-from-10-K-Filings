@@ -37,6 +37,7 @@ import seaborn as sns
 import time
 import sys
 
+
 from model import train_model, predict_sent, loss, loss_perc, kalman
 from vol_reader_fun import vol_reader2, price_reader, vol_reader
 
@@ -52,7 +53,7 @@ end_date = '2023-12-31'
 # trn_window = ['2006-01-01', '2023-12-31']
 # val_window = ['2020-01-01', '2023-12-31']
 
-trn_window = ['2006-01-01', '2020-12-31']
+trn_window = ['2006-01-01', '2023-12-31']
 val_window = ['2020-01-01', '2023-12-31']
 window = ['2006-01-01', '2023-12-31']
 # trn_window = ['2006-01-01', '2023-12-31']
@@ -88,11 +89,12 @@ comp_to_weight_value = {
 
 
 
-firms_ciks = ['0001045810']
+# firms_ciks = ['0001045810']
 #%% READ ALL DATA
-NAME = 'Nvidia'
-DATA = '0001045810'
-PORT = 'equal' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
+NAME = 'Portfolio(Top10)'
+TEMP = 'Top10'
+DATA = 'all_top10_2'
+PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
 fig_loc = f'/Users/apple/PROJECT/Hons-project/figures_df_{DATA}'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
@@ -134,6 +136,7 @@ for dep in ['_ret', '_vol']:
     train_y = train_set[dep]
 
     preds = predict_sent(mod, train_arts, llambda)
+
     
     # # Define test set 
     # test_set = df_val
@@ -149,23 +152,25 @@ for dep in ['_ret', '_vol']:
     print(f'Correct (%): {round(ll2,4)} (Benchmark = 0.5)')
     print('\n')
     
+    
     if dep == '_ret':
         mod_sent_ret = pd.Series(preds, index=df_trn.index)
 
     else:
         mod_sent_vol = pd.Series(preds, index=df_trn.index)
+        
 
 t1 = time.time()
 print(f'Total tranining time: {t1-t0}')
 # sys.exit("Error message")
 #%% Most Impractful Words
 ## print
-def impactful_words(mod):
+def impactful_words(mod, dep):
     df_mod = pd.DataFrame(mod[1], index = mod[0], columns=['0+', '0-'])
     plt.plot(df_mod['0+'] - df_mod['0-'])
     plt.xticks(fontsize=4)
     plt.xticks(rotation=90)
-    plt.savefig(f'{fig_loc}/most_impactful_words', dpi=500)
+    plt.savefig(f'{fig_loc}/most_impactful_words'+'_'+dep, dpi=500)
     plt.show()
 
     S_hat = mod[0]
@@ -181,20 +186,29 @@ def impactful_words(mod):
     print(f'Negative worsds: {S_neg[neg_ind[:15]]}')
 
     df_pos = pd.DataFrame(tone_pos[pos_ind], index = S_pos[pos_ind], columns = ['tone'])[:15]
-    df_neg = pd.DataFrame(tone_neg[neg_ind], index = S_neg[neg_ind], columns = ['tone'])[:15]
+    df_pos.to_csv(f'{fig_loc}/most_impactful_pos_words'+'_'+dep +'.csv', index=True)
 
+    df_neg = pd.DataFrame(tone_neg[neg_ind], index = S_neg[neg_ind], columns = ['tone'])[:15]
+    df_neg.to_csv(f'{fig_loc}/most_impactful_neg_words'+'_'+dep +'.csv', index=True)
+    
     plt.bar(df_pos.index,df_pos['tone'])
     plt.xticks(rotation=30)
-    plt.savefig(f'{fig_loc}/most_impactful_pos_words', dpi=500)
+    plt.savefig(f'{fig_loc}/most_impactful_pos_words'+'_'+dep, dpi=500)
     plt.show()
 
     plt.bar(df_neg.index,df_neg['tone'])
     plt.xticks(rotation=30)
-    plt.savefig(f'{fig_loc}/most_impactful_neg_words', dpi=500)
+    plt.savefig(f'{fig_loc}/most_impactful_neg_words'+'_'+dep, dpi=500)
     plt.show()
     
-for mod in [mod_ret, mod_vol]:
-    impactful_words(mod)
+
+for i, mod  in enumerate([mod_ret, mod_vol]):
+    if i == 0:
+        impactful_words(mod, 'ret')
+    if i == 1:
+        impactful_words(mod, 'vol')
+
+    
 
 #%% Sentiment predictions
 def rescale(x, unit=True):
@@ -208,14 +222,23 @@ print(f'% of neutral sentiments RET: {round((mod_sent_ret == 0.5).sum()/len(mod_
 mod_avg_ret = mod_sent_ret.groupby(mod_sent_ret.index).mean()
 mod_kal_ret = kalman(mod_avg_ret, smooth=True)
 plt.plot(mod_avg_ret, label = 'unfiltered')
-plt.plot(mod_kal_ret, '--', label = 'filtered')
+plt.plot(mod_kal_ret, label = 'filtered', linewidth=3, linestyle='--')
 plt.xlabel('Date')
 plt.ylabel('Sentiment')
 plt.legend(loc='upper right')
+plt.legend(fontsize=18)
 plt.title('RET Sentiment')
 plt.tight_layout()
 plt.savefig(f'{fig_loc}/ret_filter', dpi=500)
 plt.show()
+
+# import matplotlib.pyplot as plt
+# x = mod_kal_ret.index
+# y = mod_kal_ret.values
+# plt.plot(x, y, label='RET')
+# m, b = np.polyfit(x, y, 1)
+# plt.plot(x, m*x+b)
+
 
 # Vol sentiments
 print(f'% of neutral sentiments VOL: {round((mod_sent_vol == 0.5).sum()/len(mod_sent_vol) * 100, 2)}')
@@ -223,10 +246,11 @@ mod_avg_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
 print('mod_avg_vol', mod_avg_vol)
 mod_kal_vol = kalman(mod_avg_vol, smooth=True)
 plt.plot(mod_avg_vol, label = 'unfiltered')
-plt.plot(mod_kal_vol, '--', label = 'filtered')
+plt.plot(mod_kal_vol, label = 'filtered', linewidth=3, linestyle='--')
 plt.xlabel('Date')
 plt.ylabel('Sentiment')
 plt.legend(loc = 'upper right')
+plt.legend(fontsize=18)
 plt.title('VOL Sentiment')
 plt.tight_layout()
 plt.savefig(f'{fig_loc}/vol_filter', dpi=500)
@@ -272,6 +296,7 @@ dfts, firms_ciks = price_reader(firms_ciks, trn_window[0], trn_window[1])
 print('--- Constructing portfolio ---')
 if PORT == 'equal':
     port_val = dfts.mean(axis=1)
+
     print("Hi you are using equal portfolio")
 
     
@@ -279,37 +304,41 @@ else:
     if PORT == 'value':
         port_weights = np.array([comp_to_weight_value[c] for c in firms_ciks])
         port_weights = port_weights/sum(port_weights)
-        weight = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
-        port_val = dfts.dot(weight[0])
+        weight_ret = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
+        port_val = dfts.dot(weight_ret[0])
+
         print("Hi you are using value portfolio")
 
 # Plotting
 # dfts = price_reader(firms_ciks, trn_window[0], trn_window[1])
 fig, ax = plt.subplots()
-ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{NAME} Stock')
+
+ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{TEMP} Stock')
 ax.set_xlabel("Date")
-ax.set_ylabel(f'{NAME} Stock')
+ax.set_ylabel(f'{TEMP} Stock')
 ax2 = ax.twinx()
-ax2.plot(mod_kal_ret, label = 'RET')
-ax2.plot(mod_kal_vol, label = 'VOL')
-ax2.plot(lm_kal + 0.5 - lm_kal.mean(), label = "LM")
-ax2.set_ylabel('Sentiment')
+ax2.plot(mod_kal_ret, label = r'${\tilde{p}^{RET}}$')
+ax2.plot(mod_kal_vol, label = r'${\tilde{p}^{VOL}}$')
+ax2.plot(lm_kal + 0.5 - lm_kal.mean(), label = r'${\tilde{p}^{LM}}$')
+ax2.set_ylabel("Sentiment Score")
+ax2.set_ylabel("Sentiment Score"+"("+r'${\tilde{p}}$'+")")
+
 fig.legend(bbox_to_anchor = (0.33, 0.7))
 fig.autofmt_xdate(rotation=50)
-plt.title(f'{NAME} Sentiment Training')
-plt.savefig(f'{fig_loc}/{NAME} Sentiment Training', dpi=500)
+plt.title(f"{NAME} Sentiment Score Prediction")
+plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
 plt.show()
 
 
 fig, ax = plt.subplots()
-ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{NAME} Stock')
+ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{TEMP} Stock')
 ax.set_xlabel('Date')
-ax.set_ylabel(f'{NAME} Stock')
+ax.set_ylabel(f'{TEMP} Stock')
 ax2 = ax.twinx()
 ax2.plot(mod_kal_ret, label = "RET" )
 ax2.plot(mod_kal_vol, label = "VOL" )
 ax2.plot(lm_kal, label = 'LM' )
-ax2.set_ylabel('Sentiment')
+ax2.set_ylabel('Sentiment(RET, VOL, LM)')
 fig.legend(bbox_to_anchor = (0.33, 0.7))
 
 
@@ -317,23 +346,164 @@ fig.legend(bbox_to_anchor = (0.33, 0.7))
 
 port_val_aligned = port_val.reindex(mod_sent_ret.index)
 port_val_aligned.dropna(inplace=True)
-print('port_val', port_val_aligned)
+
 sents = pd.concat([mod_sent_ret, mod_sent_vol, lm_trn, port_val_aligned], axis = 1)
 sents.columns = ['ret', 'vol', 'lm', 'stock']
-print('p_hat correlation')
-print(sents.corr())
+
+
+#pearson
+print('p_hat pearson correlation')
+print(sents.corr(method='pearson'))
 
 sents_tilde = pd.concat([mod_kal_ret, mod_kal_vol, lm_kal, port_val_aligned], axis = 1)
 sents_tilde.columns = ['ret', 'vol', 'lm', 'stock']
 
 
-print('p_tilde correlation')
-print(sents_tilde.corr())
+print('p_tilde pearson correlation')
+print(sents_tilde.corr(method='pearson'))
+from scipy.stats import shapiro
+from scipy.stats.stats import pearsonr, spearmanr, normaltest
+# normaltest
+# nn_test_ret = shapiro(sents['ret']) 
+# print('nn_test_ret', nn_test_ret)
+# nn_test_vol = shapiro(sents['vol'])
+# print('nn_test_vol', nn_test_vol)
+# nn_test_lm = shapiro(sents['lm'])
+# print('nn_test_lm', nn_test_lm)
+# nn_test_stock = shapiro(sents['stock'])
+# print('nn_test_stock', nn_test_stock)
+# print('\n')
 
-from scipy.stats.stats import pearsonr
-corr = pearsonr(sents['ret'], sents['vol'])
-print('pearsonr', corr)
+# nn_test_ret = shapiro(sents_tilde['ret']) 
+# print('nn_test_ret', nn_test_ret)
+# nn_test_vol = shapiro(sents_tilde['vol'])
+# print('nn_test_vol', nn_test_vol)
+# nn_test_lm = shapiro(sents_tilde['lm'])
+# print('nn_test_lm', nn_test_lm)
+# nn_test_stock = shapiro(sents_tilde['stock'])
+# print('nn_test_stock', nn_test_stock)
+# print('\n')
 
+mean_ret = sents['ret'].mean()
+mean_vol = sents['vol'].mean()
+std_ret = sents['ret'].std()
+std_vol = sents['vol'].std()
+min_ret = sents['ret'].min()
+min_vol = sents['vol'].min()
+max_ret = sents['ret'].max()
+max_vol = sents['vol'].max()
+
+print('mean')
+print('mean_ret: ', mean_ret)
+print('std_ret:', std_ret)
+print('min_ret:', min_ret)
+print('max_ret:', max_ret)
+
+print('vol')
+print('mean_vol: ', mean_vol)
+print('std_vol:', std_vol)
+print('min_vol:', min_vol)
+print('max_vol:', max_vol)
+
+
+corr_ret_val = pearsonr(sents['ret'], sents['vol'])
+print('corr_ret_val', corr_ret_val)
+corr_ret_lm = pearsonr(sents['ret'], sents['lm'])
+print('corr_ret_lm', corr_ret_lm)
+corr_ret_stock = pearsonr(sents['ret'], sents['stock'])
+print('corr_ret_stock', corr_ret_stock)
+corr_vol_lm = pearsonr(sents['vol'], sents['lm'])
+print('corr_vol_lm', corr_vol_lm)
+corr_vol_stock = pearsonr(sents['vol'], sents['stock'])
+print('corr_vol_stock', corr_vol_stock)
+corr_stock_lm = pearsonr(sents['stock'], sents['lm']) # don't need to evalute this one./
+print('corr_stock_lm', corr_stock_lm)
+print('\n')
+
+
+
+corr_ret_val = pearsonr(sents_tilde['ret'], sents_tilde['vol'])
+print('corr_ret_val', corr_ret_val)
+corr_ret_lm = pearsonr(sents_tilde['ret'], sents_tilde['lm'])
+print('corr_ret_lm', corr_ret_lm)
+corr_ret_stock = pearsonr(sents_tilde['ret'], sents_tilde['stock'])
+print('corr_ret_stock', corr_ret_stock)
+corr_vol_lm = pearsonr(sents_tilde['vol'], sents_tilde['lm'])
+print('corr_vol_lm', corr_vol_lm)
+corr_vol_stock = pearsonr(sents_tilde['vol'], sents_tilde['stock'])
+print('corr_vol_stock', corr_vol_stock)
+corr_stock_lm = pearsonr(sents_tilde['stock'], sents_tilde['lm']) # don't need to evalute this one./
+print('corr_stock_lm', corr_stock_lm)
+print('\n')
+
+# x1 = sents_tilde['vol']
+# y1 = sents_tilde['ret']
+# plt.figure(figsize=(8, 6))
+# plt.scatter(x1, y1, alpha=0.6, edgecolors='w', s=80)
+# plt.title('Scatter Plot showing Correlation between Two Variables')
+# plt.xlabel('vol')
+# plt.ylabel('ret')
+# plt.grid(True)
+# plt.show()
+
+# x2 = sents_tilde['vol']
+# y2 = sents_tilde['lm']
+# plt.figure(figsize=(8, 6))
+# plt.scatter(x2, y2, alpha=0.6, edgecolors='w', s=80)
+# plt.title('Scatter Plot showing Correlation between Two Variables')
+# plt.xlabel('vol')
+# plt.ylabel('lm')
+# plt.grid(True)
+# plt.show()
+
+# x2 = sents_tilde['vol']
+# y2 = sents_tilde['stock']
+# plt.figure(figsize=(8, 6))
+# plt.scatter(x2, y2, alpha=0.6, edgecolors='w', s=80)
+# plt.title('Scatter Plot showing Correlation between Two Variables')
+# plt.xlabel('vol')
+# plt.ylabel('lm')
+# plt.grid(True)
+# plt.show()
+
+# #spearmanr
+# print('----------spearmaner------------')
+# print('p_hat spearmanr correlation')
+# print(sents.corr(method='spearman'))
+
+
+# print('p_tilde spearmanr correlation')
+# print(sents_tilde.corr(method='spearman'))
+
+
+# corr_ret_val = spearmanr(sents['ret'], sents['vol'])
+# print('corr_ret_val', corr_ret_val)
+# corr_ret_lm = spearmanr(sents['ret'], sents['lm'])
+# print('corr_ret_lm', corr_ret_lm)
+# corr_ret_stock = spearmanr(sents['ret'], sents['stock'])
+# print('corr_ret_stock', corr_ret_stock)
+# corr_vol_lm = spearmanr(sents['vol'], sents['lm'])
+# print('corr_vol_lm', corr_vol_lm)
+# corr_vol_stock = spearmanr(sents['vol'], sents['stock'])
+# print('corr_vol_stock', corr_vol_stock)
+# corr_stock_lm = spearmanr(sents['stock'], sents['lm']) # don't need to evalute this one./
+# print('corr_stock_lm', corr_stock_lm)
+# print('\n')
+
+# corr_ret_val = spearmanr(sents_tilde['ret'], sents_tilde['vol'])
+# print('corr_ret_val', corr_ret_val)
+# corr_ret_lm = spearmanr(sents_tilde['ret'], sents_tilde['lm'])
+# print('corr_ret_lm', corr_ret_lm)
+# corr_ret_stock = spearmanr(sents_tilde['ret'], sents_tilde['stock'])
+# print('corr_ret_stock', corr_ret_stock)
+# corr_vol_lm = spearmanr(sents_tilde['vol'], sents_tilde['lm'])
+# print('corr_vol_lm', corr_vol_lm)
+# corr_vol_stock = spearmanr(sents_tilde['vol'], sents_tilde['stock'])
+# print('corr_vol_stock', corr_vol_stock)
+# corr_stock_lm = spearmanr(sents_tilde['stock'], sents_tilde['lm']) # don't need to evalute this one./
+# print('corr_stock_lm', corr_stock_lm)
+
+sys.exit('Prediction Done')
 
 #%% ECONOMETRIC VALIDATION: LM & MODEL predicitons
 print('--- Splitting data set ---')

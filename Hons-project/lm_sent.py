@@ -27,6 +27,7 @@ lm_dict = dict.fromkeys(pos_words, 1)
 lm_dict.update(dict.fromkeys(neg_words, -1))
 lm_words = set(neg_words + pos_words)
 lm_df = pd.concat([pd.Series(1, index = pos_words), pd.Series(-1, index=neg_words)])
+print('lm_df', lm_df)
 
 #%% Intuitive, i.e. substracting neg from pos
 # comps = ['0000320193', '0000789019', '0001018724', "0001730168", "0001326801",
@@ -71,7 +72,7 @@ for cik in firms_ciks:
             df_lm = pd.concat([df_lm, lm_sent], axis=0)
         
 df_lm = df_lm.rename(columns={0:'_lm'})
-df_lm.to_csv(os.path.join(SAVE_PATH,f'lm_sent_all_QQQ_2.csv'))
+# df_lm.to_csv(os.path.join(SAVE_PATH,f'lm_sent_all_QQQ_2.csv'))
 # df_lm.to_csv(SAVE_PATH, f'lm_sent_{cik}.csv')
     
     

@@ -222,7 +222,7 @@ def loss_perc(p_hat, yy, marg = 0.01, pprint = True):
         Time series labels (e.g. returns, volatility) corresponding to N articles.
     marg : [0,0.5)
         Margin to use when selecting scored articles, 
-        e.g. marg = 0.1 ==> only consider articles scored with p_hat < 0.4 or p_hat > 0.6. The default is 0.01
+        e.g. marg = 0.1 ==> only consider fillings scored with p_hat < 0.4 or p_hat > 0.6. The default is 0.01
     pprint : Boolean, optional
         Specifies whether to print progress (for analysis purposes). The default is True.
 
