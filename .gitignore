@@ -3,3 +3,6 @@
 *.html
 *.png
 *.zip
+
+
+.env
