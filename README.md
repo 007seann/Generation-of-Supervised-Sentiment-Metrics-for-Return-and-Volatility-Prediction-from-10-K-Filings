@@ -62,7 +62,7 @@ If you need more detail information, please contact me (sean.sanggyu@gmail.com).
 #### analysis.py
 
 - **Generating Sentiment Matrix**: You can generate three different levels’ sentiment matrices by changing the configuration for each level. Follow the processes below:
-- For your convenience, I separated configuration sections for each level, so you can uncomment to run each. 
+- For your convenience, I separated configuration sections for each level, so you can uncomment one of them to run each. 
   - **Sector Level (QQQ ETF)**:
     - **Input Files**:
       - `QQQ_constituents.csv` (`.../Code_4_10k/QQQ_constituents.csv`)
