@@ -67,13 +67,13 @@ Sentiment Analysis, Fundamental Analysis, Data Orchestration, Machine Learning, 
       - `QQQ_weights.csv` (`.../Code_4_10k/QQQ_weights.csv`)
       - `df_all_QQQ_2.csv` (`.../Hons-project/data/df_all_QQQ_2.csv`) or `df_QQQ_2.csv` (`.../Hons-project/data/df_QQQ_2.csv`)
       - `lm_sent_all_QQQ_2.csv` (`.../Hons-project/data/lm_sent_all_QQQ_2.csv`) or `lm_sent_QQQ_2.csv` (`.../Hons-project/data/lm_sent_QQQ_2.csv`)
-    - **Modifications**: Change paths to your relevant paths(on lines 32,38,47,50,55).
+    - **Modifications**: Change paths to your relevant paths(on lines 32, 38, 47, 50, 55).
   - **Portfolio Level**:
     - **Input Files**:
       - `top10_QQQ_constituents.csv` (`.../Code_4_10k/top10_QQQ_constituents.csv`)
       - `df_all_top10_2.csv` (`.../Hons-project/data/df_all_top10_2.csv`) or `df_top10_2.csv` (`.../Hons-project/data/df_top10_2.csv`)
       - `lm_sent_all_top10_2.csv` (`.../Hons-project/data/lm_sent_all_top10_2.csv`) or `lm_sent_top10_2.csv` (`.../Hons-project/data/lm_sent_top10_2.csv`)
-    - **Modifications**: Change paths to your relevant paths(on lines 60, 83,86,91).
+    - **Modifications**: Change paths to your relevant paths(on lines 60, 83, 86, 91).
   - **Firm Level**:
     - **Input Files**:
       - `df_all_{firm’s CIK numbers}_2.csv` (`.../Hons-project/data/df_all_{firm’s CIK numbers}_2.csv`) or `df_{firm’s CIK numbers}_2.csv` (`.../Hons-project/data/df_{firm’s CIK numbers}_2.csv`)
