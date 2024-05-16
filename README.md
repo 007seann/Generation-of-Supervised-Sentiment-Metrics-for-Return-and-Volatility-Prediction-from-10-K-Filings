@@ -37,6 +37,8 @@ Sentiment Analysis, Fundamental Analysis, Data Orchestration, Machine Learning, 
 - **vol_reader.py**: Retrieves financial time series from Yahoo Finance and computes aggregated measures of volatility and returns for given company names.
 
 ### Code Customization
+Code is a bit crude as it is not refactored well for now. 
+If you need more detail information, please contact me (sean.sanggyu@gmail.com). 
 
 #### company_csv_builder.py
 
