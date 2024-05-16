@@ -24,7 +24,7 @@ end_date = '2023-12-31'
 # # proxy = ['daily-range', 'return']# for time series
 
 # Read firms' ciks
-QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv"
+QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv" # You can change the path on your path setting to use QQQ_constituents.csv
 firms_df = pd.read_csv(QQQfirms_csv_file_path)
 firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
 firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
@@ -34,7 +34,8 @@ firms_ciks = [cik for cik in firms_df['CIK'].tolist() if not (cik in seen or see
 
 
 # Reach out to risk factor path
-files_path = '/Users/apple/PROJECT/Code_4_10k/fillings'
+files_path = '/Users/apple/PROJECT/Code_4_10k/fillings' # You can change the path on your path setting to use the files in the company_df folder
+
 folder = 'company_df'     
 folder_path = os.path.join(files_path, folder)
 if not os.path.exists(folder_path):
@@ -68,14 +69,14 @@ for cik in firms_ciks:
             comb = comb[comb['_ret'].notna()]
             comb.reset_index(inplace=True)
             print("comb", comb)
-            path = "/Users/apple/PROJECT/Hons-project/data/all"
+            path = "/Users/apple/PROJECT/Hons-project/data/all" #This is the path where firms’ data frames are saved. Change your path
             if not os.path.exists(path):
                 os.makedirs(path)
             filename = f'df_all_{cik}.csv'
             comb.to_csv(os.path.join(path, filename))
             
 # Concatenating dataframes
-save_file_path = "/Users/apple/PROJECT/Hons-project/data/"
+save_file_path = "/Users/apple/PROJECT/Hons-project/data/" #You can change the path where you want to save your the document-term metrix
 filename = "df_all_QQQ"
 first = True
 for cik in firms_ciks:

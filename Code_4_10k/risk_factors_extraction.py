@@ -756,8 +756,8 @@ def process_files_for_cik_with_italic(cik):
                 
                     
 
-root_folder = 'data'
-root_folder_risk_factors = 'risk_factors'
+root_folder = '/Users/apple/PROJECT/Code_4_10k/top10_data'
+root_folder_risk_factors = '/Users/apple/PROJECT/Code_4_10k/top10_risk_factors'
 error_html_csv_path = 'error_html_log.csv'
 error_txt_csv_path = 'error_txt_log.csv'
 if os.path.exists(error_html_csv_path):
@@ -769,6 +769,7 @@ if os.path.exists(error_txt_csv_path):
 with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
     futures = []
     for cik in os.listdir(root_folder):
+        print('Processing CIK_executing risk factor process:', cik)
         future = executor.submit(process_files_for_cik_with_italic, cik)
         futures.append(future)
     
