@@ -6,12 +6,29 @@ import time
 import atexit
 import asyncio
 import aiohttp
-from aiohttp import ClientSession
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+from aiohttp import ClientSession, TCPConnector
 
+# Global variables
+total_len = 0
+valid = 0
+total_requests = 0
+request_counter = 0
+save_folder = "analysis_report_ids"
+year_until = 2024
+year_since = 2006
+pages = [i for i in range(1, 4)] # Assume the total number of annual reports per firm is less than 120
+
+# Configuration
+RATE_LIMIT = 5 # Maximum requests per second
+MAX_RETRIES = 5 # Retry up to 50 times on failures
+INITIAL_BACKOFF = 1  # Start with a 1-second delay
+CONCURRENCY_LIMIT = 5 # Limit to 20 concurrent tasks
+BATCH_SIZE = 30  # Process 60 tickers at a time
+
+# File path for CSV
 path = '/Users/apple/PROJECT/Code_4_10k/sp500_total_constituents.csv'
 
+# Read and process CSV
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
@@ -23,24 +40,14 @@ except UnicodeDecodeError:
     ticker = df['Symbol'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 
-total_len = 0
-valid = 0
-total_requests = 0
-save_folder = "analysis_report_ids3"
-year_until = 2024
-year_since = 2006
-pages = [i for i in range(25)] # Assume the total number of annual reports per firm is less than 1,000.
 
+# Convert years to Unix time
 year2unixTime = {}
 for year in range(2024, 2006, -1):
     current_year_timestamp = int(datetime.datetime(year, 1, 1).timestamp())
     year2unixTime[year] = current_year_timestamp
 
-# Rate limiting variables
-rate_limit = 5
-request_counter = 0
-last_request_time = time.time()
-lock = Lock()
+
 
 async def fetch_data_for_ticker(ticker, session):
     global total_len, valid, total_requests, request_counter, last_request_time
@@ -72,28 +79,46 @@ async def fetch_data_for_ticker(ticker, session):
                 "x-rapidapi-key": "13f98f0478msha8ec97b6a805b1fp174175jsn98c8458d4397",
                 "x-rapidapi-host": "seeking-alpha.p.rapidapi.com"
             }
-            try:
-                async with lock:
-                    current_time = time.time()
-                    if request_counter >= rate_limit and current_time - last_request_time < 1:
-                        await asyncio.sleep(1 - (current_time - last_request_time))
-                        request_counter = 0
-                        last_request_time = time.time()
-                    async with session.get(url, headers=headers, params=querystring) as response:
+            
+            retries = 0
+            backoff = INITIAL_BACKOFF
+            
+            while retries < MAX_RETRIES:
+                try:
+                    async with session.get(url, headers=headers, params=querystring, timeout=30) as response:
+                        if response.status == 429:
+                            print(f"Rate limit hit for {ticker}, retrying in {backoff} seconds...")
+                            await asyncio.sleep(backoff)
+                            backoff *= 2
+                            retries += 1
+                            continue
                         response.raise_for_status()
-                        response_json = await response.json()
-                        request_counter += 1
-                        total_requests += 1
-            except aiohttp.ClientError as e:
-                error_message = f"Error fetching data for {ticker}, year {year-1}, page {page}: {e}"
-                print(error_message)
-                with open('error_log.txt', 'a') as error_log_file:
-                    error_log_file.write(error_message + '\n')
-                continue
-            if 'data' in response_json and response_json['data']:
-                merged_data['data'].extend(response_json['data'])
-                total_len += len(response_json['data'])
-                valid += 1
+                        try:
+                            response_json = await response.json()
+                            request_counter += 1
+                            total_requests += 1
+                        # Retry on Parsing Errors:
+                        except aiohttp.ContentTypeError:
+                            print(f"Invalid content type or empty response. Raw response: {await response.text()}")
+                            response_json = None
+                        
+                        if response_json and 'data' in response_json and response_json['data']:
+                            merged_data['data'].extend(response_json['data'])
+                            total_len += len(response_json['data'])
+                            valid += 1
+                        
+                        break # Exit retry loop on success
+                # Retry on Unexpected Server Behavior - json.JSONDecodeError
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
+                    error_message = f"Error fetching data for {ticker}, year {year-1}, page {page}: {e}"
+                    print(error_message)
+                    with open('error_log.txt', 'a') as error_log_file:
+                        error_log_file.write(error_message + '\n')
+                    retries *= 1
+                    backoff *= 2
+                    await asyncio.sleep(backoff)
+                    continue
+
 
         with open(year_file_path, 'w') as json_file:
             json.dump(merged_data, json_file, indent=4)
@@ -102,9 +127,9 @@ async def fetch_data_for_ticker(ticker, session):
 def log_state():
     end_time = time.time()
     elapsed_time = end_time - start_time
-    log_file_path = 'ids_api_requests_log.txt'
+    log_file_path = 'ids_api_requests_log_test.txt'
     with open(log_file_path, 'a') as log_file:
-        log_file.write(f"Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
+        log_file.write(f"Total id counts: {total_len},Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
     print(f"Total data length: {total_len}")
     print(f"Valid requests: {valid}")
     print(f"Elapsed time: {elapsed_time:.2f} seconds")
@@ -117,14 +142,16 @@ atexit.register(log_state)
 start_time = time.time()
 
 async def main():
-    async with ClientSession() as session:
-        tasks = [fetch_data_for_ticker(ticker, session) for ticker in cik_ticker.values()]
-        await asyncio.gather(*tasks)
-
-def run_main():
+    connector = TCPConnector(limit_per_host=CONCURRENCY_LIMIT)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tickers = list(cik_ticker.values())
+        
+        # Process in batches
+        for i in range(0, len(tickers), BATCH_SIZE):
+            batch = tickers[i:i + BATCH_SIZE]
+            print(f"Processing batch {i // BATCH_SIZE + 1}: {batch}")
+            tasks = [fetch_data_for_ticker(ticker, session) for ticker in batch]
+            await asyncio.gather(*tasks)
+            
+if __name__ == "__main__":
     asyncio.run(main())
-
-with ThreadPoolExecutor(max_workers=20) as executor:
-    futures = [executor.submit(run_main) for _ in range(20)]
-    for future in as_completed(futures):
-        future.result()

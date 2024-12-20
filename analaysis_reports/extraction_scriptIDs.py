@@ -28,7 +28,7 @@ total_requests = 0
 save_folder = "analysis_report_ids"
 year_until = 2024
 year_since = 2006
-pages = [i for i in range(25)] # Assume the total number of annual reports per firm is less than 1,000.
+pages = [i for i in range(1, 4)] # Assume the total number of annual reports per firm is less than 120.
 
 year2unixTime = {}
 for year in range(2024, 2006, -1):
@@ -103,7 +103,7 @@ def log_state():
     elapsed_time = end_time - start_time
     log_file_path = 'ids_api_requests_log.txt'
     with open(log_file_path, 'a') as log_file:
-        log_file.write(f"Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
+        log_file.write(f"Total Num Ids: {total_len}, Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
     print(f"Total data length: {total_len}")
     print(f"Valid requests: {valid}")
     print(f"Elapsed time: {elapsed_time:.2f} seconds")
