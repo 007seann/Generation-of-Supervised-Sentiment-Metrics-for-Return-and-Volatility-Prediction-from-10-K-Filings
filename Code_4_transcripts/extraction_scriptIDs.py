@@ -16,7 +16,7 @@ request_counter = 0
 save_folder = "transcript_ids"
 year_until = 2024
 year_since = 2006
-pages = [i for i in range(1, 3)] # Assume the total number of annual reports per firm is less than 80
+pages = [i for i in range(1, 5)] # Assume the total number of data points per firm is less than 160, including transcripts and earning slides
 
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
@@ -57,6 +57,7 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
         os.makedirs(save_folder)
 
     year_file_path = os.path.join(save_folder, f"{ticker}_transcript_ids.json")
+    
 
     merged_data = {"data": []}
     for page in pages:
@@ -96,6 +97,7 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
                         except aiohttp.ContentTypeError:
                             print(f"Invalid content type or empty response. Raw response: {await response.text()}")
                             response_json = None
+                        
                         
                         if response_json.get('data'):
                             merged_data['data'].extend(response_json['data'])

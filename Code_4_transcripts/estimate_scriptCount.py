@@ -6,8 +6,8 @@ import aiohttp
 import pandas as pd
 
 # Global variables
-id_folder = "analysis_report_ids"
-save_folder = "analysis_reports_count"
+id_folder = "transcript_ids"
+save_folder = "transcript_count"
 year_since = 2006
 year_until = 2024
 
@@ -51,16 +51,17 @@ async def fetch_ids_for_ticekr(ticker: str, semaphore: asyncio.Semaphore):
                 json_data = json.load(json_file)
                 if 'data' in json_data and json_data['data']:                
                     for i in range(len(json_data['data'])):
-                        id = json_data['data'][i]['id']
-                        title = json_data['data'][i]['attributes']['title']
-                        id2title[id] = title
+                        if json_data['data'][i]['type'] == 'transcript':
+                            id = json_data['data'][i]['id']
+                            title = json_data['data'][i]['attributes']['title']
+                            id2title[id] = title
             year_id2title[year] = id2title
             year_ids_counts = len(id2title)
             total_numIds += year_ids_counts
             # save annual counts
             if not os.path.exists(save_folder):
                 os.makedirs(save_folder)
-            save_path = os.path.join(save_folder, f'{ticker}_report_count.txt')
+            save_path = os.path.join(save_folder, f'{ticker}_transcript_count.txt')
             with open(save_path, 'a') as file:
                 file.write(f"{year}: {year_ids_counts}\n")
                 
@@ -68,11 +69,11 @@ async def fetch_ids_for_ticekr(ticker: str, semaphore: asyncio.Semaphore):
         # save counts
         if not os.path.exists(save_folder):
             os.makedirs(save_folder)
-        save_path = os.path.join(save_folder, f'{ticker}_report_count.txt')
+        save_path = os.path.join(save_folder, f'{ticker}_transcript_count.txt')
         with open(save_path, 'a') as file:
             file.write(f"Total Count: {total_numIds}\n")
             
-        with open('sp500_reports_counts.txt', 'a') as file:
+        with open('sp500_transcripts_counts.txt', 'a') as file:
             file.write(f"{ticker}:{total_numIds}\n ")
 
 
