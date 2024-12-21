@@ -26,7 +26,7 @@ CONCURRENCY_LIMIT = 60 # Limit to 60 concurrent tasks
 BATCH_SIZE = 30  # Process 30 tickers at a time
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_10k/sp500_total_constituents.csv'
+path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv'
 
 # Read and process CSV
 try:
@@ -43,7 +43,7 @@ except UnicodeDecodeError:
 
 # Convert years to Unix time
 year2unixTime = {}
-for year in range(2024, 2005, -1):
+for year in range(year_until + 1, year_since - 1, -1):
     current_year_timestamp = int(datetime.datetime(year, 1, 1).timestamp())
     year2unixTime[year] = current_year_timestamp
 
@@ -56,13 +56,12 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
     if not os.path.exists(ticker_save_folder):
         os.makedirs(ticker_save_folder)
 
-    for year in range(year_until, year_since, -1):
+    for year in range(year_until + 1, year_since, -1):
         year_file_path = os.path.join(ticker_save_folder, f"{year-1}.json")
         if os.path.exists(year_file_path):
             with open(year_file_path, 'r') as json_file:
                 existing_data = json.load(json_file)
-                if 'data' in existing_data and existing_data['data']:
-                    print(f"File for {ticker}, year {year-1} already exists and contains data. Skipping download.")
+                if existing_data is not None and 'data' in existing_data and existing_data['data']:
                     continue
         
         merged_data = {"data": []}
