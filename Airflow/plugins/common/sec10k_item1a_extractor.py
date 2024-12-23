@@ -6,19 +6,20 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 import os
-
-import nltk
+import concurrent.futures  # Import the concurrent.futures module
 from collections import Counter
 import re
 import csv
-nltk.download('punkt')
+
+import nltk
+nltk.data.path.append('/opt/airflow/nltk_data')
+# nltk.download('punkt')
 from nltk.tokenize import word_tokenize
-import concurrent.futures  # Import the concurrent.futures module
+
 # from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
 from nltk.tokenize import sent_tokenize
 
-nltk.download('stopwords')
+# nltk.download('stopwords')
 stop_words = set(nltk.corpus.stopwords.words('english'))
 
 

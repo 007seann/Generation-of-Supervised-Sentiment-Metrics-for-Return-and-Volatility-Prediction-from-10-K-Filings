@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+   <property>
+      <name>hive.metastore.uris</name>
+      <value>thrift://localhost:9083</value>
+   </property>
+   <property>
+      <name>hive.metastore.client.socket.timeout</name>
+      <value>300</value>
+   </property>
+   <property>
+      <name>hive.metastore.warehouse.dir</name>
+      <value>/data/hive/warehouse</value>
+   </property>
+   <property>
+      <name>javax.jdo.option.ConnectionURL</name>
+      <value>jdbc:postgresql://postgres_container:5432/metastore</value>
+      <description>JDBC connect string for a JDBC metastore</description>
+   </property>
+   <property>
+      <name>javax.jdo.option.ConnectionDriverName</name>
+      <value>org.postgresql.Driver</value>
+   </property>
+   <property>
+      <name>javax.jdo.option.ConnectionUserName</name>
+      <value>airflow</value>
+   </property>
+   <property>
+      <name>javax.jdo.option.ConnectionPassword</name>
+      <value>airflow</value>
+   </property>
+   <property>
+      <name>hive.enable.spark.execution.engine</name>
+      <value>false</value>
+   </property>
+   <property>
+      <name>hive.exec.stagingdir</name>
+      <value>/tmp/hive/hive-staging</value>
+   </property>
+</configuration>

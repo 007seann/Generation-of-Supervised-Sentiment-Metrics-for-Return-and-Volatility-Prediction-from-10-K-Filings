@@ -39,7 +39,7 @@ def vol_reader(comp, start_date, end_date):
             return np.square(ran)/adj_factor
         elif proxy == 'return':
             def ret_fun(xt_1, xt):
-                return np.log(xt/xt_1)
+                return np.log(xt_1/xt) ### used to xt/xt_1
             return ret_fun(ret['Open'], ret['Close'])
         else:
             assert proxy == 'squared return'
@@ -61,7 +61,7 @@ def vol_reader(comp, start_date, end_date):
 
 def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, extra_start = False, AR = None):
     def ret_fun(xt_1, xt): # log difference
-        return np.log(xt/xt_1)
+        return np.log(xt_1/xt) ### used to xt/xt_1
 
     ts = []
     empty = []

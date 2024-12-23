@@ -11,19 +11,35 @@ import re
 import csv
 from nltk.tokenize import word_tokenize
 from tqdm import tqdm
-
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 # Download reports
-class LimitRequest(object):
-    SEC_CALL_LIMIT = {'calls': 10, 'seconds': 1}
-    @sleep_and_retry
-    @limits(calls=SEC_CALL_LIMIT['calls'], period=SEC_CALL_LIMIT['seconds'])
-    def _call_sec(url,headers):
-        return requests.get(url,headers=headers)
+# class LimitRequest(object):
+#     SEC_CALL_LIMIT = {'calls': 10, 'seconds': 1}
+#     @sleep_and_retry
+#     @limits(calls=SEC_CALL_LIMIT['calls'], period=SEC_CALL_LIMIT['seconds'])
+#     def _call_sec(url,headers):
+#         return requests.get(url,headers=headers)
     
+#     @classmethod
+#     def get(cls,url,headers):
+#         return cls._call_sec(url, headers)
+    
+class LimitRequest:
+    SEC_CALL_LIMIT = {'calls': 10, 'seconds': 1}
+
+    @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))  # Retry up to 5 times with a 2-second delay
+    def _call_sec(url, headers):
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response
+        else:
+            response.raise_for_status()  # Raise exception for failed requests
+
     @classmethod
-    def get(cls,url,headers):
+    def get(cls, url, headers):
         return cls._call_sec(url, headers)
+
 
 
 def get_sec_data(cik, doc_type, headers,end_date, start_date, start, count):
@@ -106,30 +122,58 @@ def get_documents(text):
     return documents
 
 
-def download_fillings(ciks, root_folder, doc_type, headers, end_date=datetime.datetime.now(), start_date = '1990-01-01', start=0, count=60):
-    doc_type= doc_type.lower()
-    for cik in ciks:
+# def download_fillings(ciks, root_folder, doc_type, headers, end_date=datetime.datetime.now(), start_date = '1990-01-01', start=0, count=60):
+#     doc_type= doc_type.lower()
+#     for cik in ciks:
+#         cik = str(cik).zfill(10)
+#         folder_path = os.path.join(root_folder, cik)
+#         if not os.path.exists(folder_path):
+#             os.makedirs(folder_path)
+#         report_info = get_sec_data(cik, doc_type, headers, end_date=end_date, start_date=start_date, start=start, count=count)
+#         for index_url, file_type, file_date in tqdm(report_info, desc='Downloading {} Fillings'.format(cik), unit='filling'):
+#             if (file_type.lower() == doc_type):
+#                 file_url = index_url.replace('-index.htm', '.txt').replace('.txtl', '.txt')
+#                 file = LimitRequest.get(url=file_url, headers=headers)
+#                 for document in get_documents(file.text):
+#                     if get_document_type(document) == doc_type and get_document_format(document) == 'HTML':
+#                         file_name = os.path.join(folder_path, file_date + '.html')
+#                         with open(file_name,'w+') as f:
+#                             f.write(document)
+#                         f.close()
+#                     if get_document_type(document) == doc_type and get_document_format(document) == 'TXT':
+#                         file_name = os.path.join(folder_path, file_date + '.txt')
+#                         with open(file_name,'w+') as f:
+#                             f.write(document)
+#                         f.close()
+
+def download_fillings(ciks_tickers, root_folder, doc_type, headers, end_date=datetime.datetime.now(), start_date = '1990-01-01'):
+    
+    for idx, (cik, ticker) in enumerate(ciks_tickers.items()):
+
         cik = str(cik).zfill(10)
-        folder_path = os.path.join(root_folder, cik)
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-        report_info = get_sec_data(cik, doc_type, headers, end_date=end_date, start_date=start_date, start=start, count=count)
-        for index_url, file_type, file_date in tqdm(report_info, desc='Downloading {} Fillings'.format(cik), unit='filling'):
-            if (file_type.lower() == doc_type):
-                file_url = index_url.replace('-index.htm', '.txt').replace('.txtl', '.txt')
-                file = LimitRequest.get(url=file_url, headers=headers)
-                for document in get_documents(file.text):
-                    if get_document_type(document) == doc_type and get_document_format(document) == 'HTML':
-                        file_name = os.path.join(folder_path, file_date + '.html')
-                        with open(file_name,'w+') as f:
-                            f.write(document)
-                        f.close()
-                    if get_document_type(document) == doc_type and get_document_format(document) == 'TXT':
-                        file_name = os.path.join(folder_path, file_date + '.txt')
-                        with open(file_name,'w+') as f:
-                            f.write(document)
-                        f.close()
-                        
+        
+        report_info = get_sec_data(cik, ticker, doc_type, headers, end_date=end_date, start_date=start_date)
+
+
+        # check if 10-K exists, otherwise skip it
+        if not report_info:
+            continue
+        else:
+            folder_path = os.path.join(root_folder, cik)
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path)
+
+        for index_url, _ , file_date in tqdm(report_info, desc='Downloading {} Fillings'.format(cik), unit='filling'):
+            file_date = file_date.strftime('%Y-%m-%d')
+
+
+            file = LimitRequest.get(url=index_url, headers=headers)
+
+
+            file_name = os.path.join(folder_path, file_date + '.html')
+            with open(file_name,'w+') as f:
+                f.write(file.text)
+            f.close()
 
 def test(path):
     df = pd.read_csv(path, encoding = 'utf-8')

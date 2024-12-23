@@ -5,12 +5,13 @@ Created on Wed Jan 10
 
 @author: Sean Sanggyu Choi
 """
-
-import os
 import pandas as pd
-# import matplotlib.pyplot as plt
-from annual_report_reader import reader
-from vol_reader_fun import vol_reader, vol_reader2
+import os
+# import sys
+# sys.path.append(os.path.abspath("/data/airflow/plugins/packages/annual_report_reader.py"))
+# sys.path.append(os.path.abspath("/data/airflow/plugins/packages/vol_reader_fun.py"))
+from packages.annual_report_reader import reader
+from packages.vol_reader_fun import vol_reader, vol_reader2
 from concurrent.futures import ThreadPoolExecutor
 
 class DicConstructor:

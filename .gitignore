@@ -3,6 +3,13 @@
 *.html
 *.png
 *.zip
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.doc   
+*.json
+
 
 
 .env
