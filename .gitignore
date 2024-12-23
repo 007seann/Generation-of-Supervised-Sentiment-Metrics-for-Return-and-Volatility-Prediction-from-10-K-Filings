@@ -9,7 +9,7 @@
 *.pdf
 *.doc   
 *.json
-
+*.sh
 
 
 .env
