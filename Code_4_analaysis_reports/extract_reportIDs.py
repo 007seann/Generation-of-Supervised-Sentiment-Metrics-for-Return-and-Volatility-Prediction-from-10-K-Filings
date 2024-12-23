@@ -16,7 +16,7 @@ request_counter = 0
 save_folder = "analysis_report_ids"
 year_until = 2024
 year_since = 2006
-pages = [i for i in range(1, 3)] # Assume the total number of annual reports per firm is less than 80
+pages = [i for i in range(1, 1)] # Assume the total number of annual reports per firm is less than 40
 
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
