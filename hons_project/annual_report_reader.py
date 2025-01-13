@@ -27,9 +27,36 @@ from collections import Counter
 from tqdm import tqdm
 from dateutil.parser import parse
 
+
 def reader(file_name, file_loc):
-    # df = pd.read_csv(file_dir)
-    df = pd.read_csv(f'{file_loc}/{file_name}', header = 0)
+    import csv
+    def read_csv_with_detected_delimiter(file_path, fallback_delimiter='\t'):
+        """
+        Reads a CSV file, dynamically detecting the delimiter.
+        
+        Parameters:
+        file_path (str): Path to the CSV file.
+
+        Returns:
+        pd.DataFrame: A pandas DataFrame of the file's content.
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                sample = file.read(1024)  # Read a small sample to infer delimiter
+                sniffer = csv.Sniffer()
+                detected_dialect = sniffer.sniff(sample)
+                detected_delimiter = detected_dialect.delimiter
+                print(f"Detected delimiter: {detected_delimiter}")
+                return pd.read_csv(file_path, delimiter=detected_delimiter)
+        except (csv.Error, UnicodeDecodeError) as e:
+            print(f"Error detecting delimiter: {e}")
+            print(f"Falling back to default delimiter: '{fallback_delimiter}'")
+            return pd.read_csv(file_path, delimiter=fallback_delimiter)
+    
+    
+    file_path = f'{file_loc}/{file_name}'
+    # df = read_csv_with_detected_delimiter(file_path)
+    df = pd.read_csv(file_path, usecols=[0,1,2,3],delimiter=',', header=0)
     # df = df.drop(df.columns[0], axis = 1) # Drop index column
     # df = df.drop(columns = [])
     N = df.shape[0]

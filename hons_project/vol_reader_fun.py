@@ -12,15 +12,14 @@ import datetime as dt
 
 import yfinance as yf
 
-QQQfirms_csv_file_path = "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv"
+QQQfirms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
 firms_df = pd.read_csv(QQQfirms_csv_file_path)
-firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
 firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
 firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
 firms_dict = {value: key for key, value in firms_dict.items()}
 
 
-def vol_reader(comp, start_date, end_date):
+def vol_reader(comp, start_date=None, end_date=None):
 
     stock = firms_dict[comp]
     print(f'Downloading {stock} stock data')

@@ -13,7 +13,7 @@ total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
-save_folder = "analysis_report_ids"
+save_folder = "NASDAQ100_analysis_report_ids"
 year_until = 2024
 year_since = 2006
 pages = [i for i in range(1, 1)] # Assume the total number of annual reports per firm is less than 40
@@ -26,7 +26,7 @@ CONCURRENCY_LIMIT = 60 # Limit to 60 concurrent tasks
 BATCH_SIZE = 30  # Process 30 tickers at a time
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv'
+path = '/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv'
 
 # Read and process CSV
 try:

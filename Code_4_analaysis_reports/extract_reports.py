@@ -14,8 +14,8 @@ import asyncio
 import aiohttp
 
 # Global variables
-save_folder = "analysis_reports"
-id_folder = "analysis_report_ids"
+save_folder = "NASDAQ100_analysis_reports"
+id_folder = "NASDAQ100_analysis_report_ids"
 year_until = 2024
 year_since = 2006
 total_len = 0
@@ -24,7 +24,7 @@ total_requests = 0
 request_counter = 0
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv'
+path = '/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv'
 log_folder_path = '/Users/apple/PROJECT/Code_4_analaysis_reports/log'
 
 # Configuration
