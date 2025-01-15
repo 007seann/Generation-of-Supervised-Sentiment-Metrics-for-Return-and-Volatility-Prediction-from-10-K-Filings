@@ -18,15 +18,43 @@ firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
 firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
 firms_dict = {value: key for key, value in firms_dict.items()}
 
+def transform_parquet_to_yf_format(parquet_path):
+    # Read the Parquet file
+    df = pd.read_parquet(parquet_path)
+    df.rename(columns={'date': 'Date'}, inplace=True)
+    # Ensure the 'date' column is a datetime type
+    df['Date'] = pd.to_datetime(df['Date'])
+    
+    # Set the 'date' column as the index
+    df.set_index('Date', inplace=True)
+    
+    # Rename columns to match yfinance format
+    df.rename(columns={
+        'symbol': 'Symbol',
+        'open': 'Open',
+        'high': 'High',
+        'low': 'Low',
+        'close': 'Close',
+        'volume': 'Volume'
+    }, inplace=True)
+    
+    # Add 'Adj Close' column if it doesn't exist
+    if 'Adj Close' not in df.columns:
+        df['Adj Close'] = df['Close']
+    
+    return df
 
 def vol_reader(comp, start_date=None, end_date=None):
-
+    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
     stock = firms_dict[comp]
-    print(f'Downloading {stock} stock data')
-    time_series = yf.download(stock, 
-                            start = start_date,
-                            end = end_date,
-                            progress = False)
+    # print(f'Downloading {stock} stock data')
+    # time_series = yf.download(stock, 
+    #                         start = start_date,
+    #                         end = end_date,
+    #                         progress = False)
+    price_df = transform_parquet_to_yf_format(price_data_path)
+    time_series = price_df[price_df['Symbol'] == stock]
+    time_series = time_series.loc[start_date:end_date]
     def vol_proxy(ret, proxy):
         proxies = ['sqaured return', 'realized', 'daily-range', 'return']
         assert proxy in proxies, f'proxy should be in {proxies}'
@@ -61,7 +89,8 @@ def vol_reader(comp, start_date=None, end_date=None):
 def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, extra_start = False, AR = None):
     def ret_fun(xt_1, xt): # log difference
         return np.log(xt_1/xt) ### used to xt/xt_1
-
+    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
+    price_df = transform_parquet_to_yf_format(price_data_path)
     ts = []
     empty = []
     if extra_end:
@@ -77,11 +106,8 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
             
     for cc in comps:
         stock = firms_dict[cc]
-        print(f'Downloading {stock} stock data')
-        time_series = yf.download(stock, 
-                            start=start_date, 
-                            end=end_date, 
-                            progress=False)
+        time_series = price_df[price_df['Symbol'] == stock]
+        time_series = time_series.loc[start_date:end_date]
         if time_series.empty:
             print(f'{stock} data is empty')
             empty.append(cc)
@@ -172,19 +198,15 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
     
 
 def price_reader(comps, start_date, end_date):
-
-    # firms_dict = {ticker : cik}
-    # comps = [cik]
+    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
+    price_df = transform_parquet_to_yf_format(price_data_path)
     ts = []
     empty = []
     for cc in comps:
         stock = firms_dict[cc]
         try:
-            print(f'Downloading {stock} stock data')
-            time_series = yf.download(stock,
-                                    start=start_date,
-                                    end=end_date,
-                                    progress=False)
+            time_series = price_df[price_df['Symbol'] == stock]
+            time_series = time_series.loc[start_date:end_date]
             if time_series.empty:
                 print(f'{stock} data is empty')
                 empty.append(cc)

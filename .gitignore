@@ -10,6 +10,6 @@
 *.doc   
 *.json
 *.sh
-*.jar
-
+*.jarha
+*.parquet
 .env

@@ -35,7 +35,9 @@ class ConstructDTM:
                 print(f"Path does not exist for CIK: {cik}")
                 return None
 
-            # List all files for the current CIK
+            # List all files for the current CIK 
+            # # Need to update to the code to add up new files(real-time) into either current csv or new csv files
+            # I think pickle cache is required to check for the existence of the currnet files(txt files).
             files = [os.path.join(cik_path, f) for f in os.listdir(cik_path) if os.path.isfile(os.path.join(cik_path, f))]
 
             # Process each file and construct rows
@@ -58,7 +60,7 @@ class ConstructDTM:
         for cik, symbol in self.firms_dict.items():
             output_path = os.path.join(self.output_folder, cik)
             if os.path.exists(output_path):
-                print(f"CSV file already exists for CIK: {cik}, skipping...")
+                print(f"CSV file already exists for CIK: {cik}, skipping...") # Not for real-time update 
                 continue
 
             print(f"Processing CIK: {cik}")
@@ -73,6 +75,7 @@ class ConstructDTM:
     def process_filings_for_cik_spark(self, spark, data_folder, files_path, firms_dict, firms_ciks, columns, start_date, end_date):
         """
         Process CIK filings using Spark in a distributed manner, applying the reader function to each file.
+        Output : dtm_{cik}.csv
         """
         folder = 'company_df'
         folder_path = os.path.join(files_path, folder)
@@ -91,6 +94,9 @@ class ConstructDTM:
             output_path = os.path.join(files_path, f"processed/dtm_{cik}.csv")
 
             # Check if the output file already exists
+            # Not for real-time update 
+            # Need to be changed to update the dtm_{cik}.csv file
+            # Refer to def append_to_dtm code in the Notion
             if os.path.exists(output_path):
                 print(f"CSV file already exists for CIK: {cik}, skipping...")
                 return None
@@ -103,11 +109,12 @@ class ConstructDTM:
             # Combine all processed files for the CIK into a single DataFrame
             processed_data = []
             for file_name in os.listdir(cik_folder):
-                file_path = os.path.join(cik_folder, file_name)
                 if not file_name.endswith('.csv'):
                     continue
                 # Apply the reader function
                 processed_file = reader(file_name, file_loc=cik_folder)
+                # processed_file.index = processed_file.index.tz_localize("UTC")
+
                 if processed_file is not None:
                     processed_data.append(processed_file)
             if not processed_data:
@@ -116,7 +123,6 @@ class ConstructDTM:
 
             # Combine all processed files into a DataFrames
             combined_data = pd.concat(processed_data)
-
             # Convert the processed data to a Spark DataFrame
             # Read and join with volatility data
 
@@ -124,14 +130,16 @@ class ConstructDTM:
 
             
             # Merge the data
-            # combined_data = combined_data.merge(vol_data, how="inner", on="Date")
             combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
-            
+
             # Add the '_cik' column
             combined_data["_cik"] = cik
 
+            # Convert the index to a column
+            combined_data = combined_data.reset_index()
+
             # Reorder columns
-            columns_to_move = ['_cik', '_vol', '_ret', '_vol+1', '_ret+1']
+            columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
             new_column_order = columns_to_move + [col for col in combined_data.columns if col not in columns_to_move]
             combined = combined_data[new_column_order]
 
@@ -151,20 +159,77 @@ class ConstructDTM:
         cik_rdd = spark.sparkContext.parallelize(firms_ciks)
         cik_rdd.foreach(lambda cik: process_single_cik(cik))
 
-    def concatenate_dataframes(self):
+    def concatenate_dataframes(self, level, section, save_path, start_date, end_date):
+        from hons_project.vol_reader_fun import vol_reader2
         """
         Concatenate all processed DataFrames into a single DataFrame.
         """
-        dataframes = [
-            self.spark.read.csv(f"{self.save_folder}/processed/dtm_{cik}.csv", header=True, inferSchema=True)
-            for cik in self.firms_ciks
-        ]
-        combined_df = dataframes[0].unionAll(*dataframes[1:])
+        dataframes = []
+        files_path = os.path.join(save_path, 'processed')
+        for cik in self.firms_ciks:
+            file_path = os.path.join(files_path, f'dtm_{cik}.csv')
+            if os.path.exists(file_path):
+                df = self.spark.read.csv(file_path, header=True, inferSchema=True)
+                dataframes.append(df)
+            else:
+                print(f"File does not exist for CIK: {cik}, skipping...")
 
-        # Save the concatenated DataFrame
-        output_path = os.path.join(self.save_folder, "final_combined.csv")
-        combined_df.write.csv(output_path, header=True, mode="overwrite")
-        print(f"Saved concatenated DataFrame to {output_path}")
+        if dataframes:
+            # Combine all DataFrames
+            combined_df = dataframes[0]
+            for df in dataframes[1:]:
+                combined_df = combined_df.unionByName(df, allowMissingColumns=True)
+
+            combined_df = combined_df.fillna(0.0)
+            combined_df = combined_df.withColumnRenamed('Date0', 'Date')
+            combined_df = combined_df.orderBy("Date")
+
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+
+            # Align with 3-day return/volatility
+            x1, x2 = vol_reader2(self.firms_ciks, start_date, end_date, window=3, extra_end=True, extra_start=True)
+            x1 = x1.shift(1)
+            x2 = x2.shift(1)
+            x1 = x1[start_date:end_date]
+            x2 = x2[start_date:end_date]
+
+
+            first = True
+            for cik in self.firms_ciks:
+                print(f'Processing {cik}')
+                x1c = x1[cik]
+                x2c = x2[cik]
+                x = pd.concat([x1c, x2c], axis=1)
+                x.columns = ['n_ret', 'n_vol']
+                y = combined_df.filter(combined_df['_cik'] == int(cik.lstrip('0')))
+
+                y = y.withColumn('Date', y['Date'].cast('timestamp'))
+                x.index = pd.to_datetime(x.index)
+                y = y.toPandas()
+                y.set_index('Date', inplace=True)
+                z = y.join(x)
+                zz = z[['n_ret', 'n_vol']]
+
+                if first:
+                    df_add = zz
+                    first = False
+                else:
+                    df_add = pd.concat([df_add, zz], axis=0)
+
+            df_add.reset_index(inplace=True)
+            assert all(combined_df.toPandas().index == df_add.index), 'Do not merge!'
+
+            combined_df = combined_df.toPandas()
+            combined_df['_ret'] = df_add['n_ret']
+            combined_df['_vol'] = df_add['n_vol']
+
+
+            filename = f'dtm_{level}_{section}'
+            file_path = os.path.join(save_path, f"{filename}.csv")
+            combined_df.to_csv(file_path, index=False)
+        else:
+            print("No dataframes to concatenate.")
 
     @staticmethod
     def import_file(file_path):
@@ -187,7 +252,7 @@ if __name__ == "__main__":
     # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt"
     data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/test.filings"
     save_folder = "/Users/apple/PROJECT/hons_project/data/SP500"
-    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
+    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
     firms_df = pd.read_csv(firms_csv_file_path)
     firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
     firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
@@ -203,4 +268,4 @@ if __name__ == "__main__":
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
     pipeline.csv_builder()
     pipeline.process_filings_for_cik_spark(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    pipeline.concatenate_dataframes()
+    pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
