@@ -7,6 +7,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import the function
 import pandas as pd
+import redis
 
 
 class ConstructDTM:
@@ -24,44 +25,125 @@ class ConstructDTM:
         
         # Add hons_project.zip to SparkContext
         self.spark.sparkContext.addPyFile("/Users/apple/PROJECT/package/hons_project.zip")
+        
+        # Initialise Redis connection
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        
+    def load_cache(self, cik):
+        """
+        Load the set of already processed file names for a given CIK from Redis.
+        Return a Python set of file names.
+        """
+        redis_key = f"processed_files:{cik}"
+        processed_files = self.redis_client.smembers(redis_key)  # returns a set of bytes
+        # Decode bytes to strings
+        return {file_name.decode('utf-8') for file_name in processed_files}
+    
+    def save_cache(self, cik, file_names):
+        """
+        Add the given file names to the Redis set for a given CIK.
+        """
+        redis_key = f"processed_files:{cik}"
+        for fn in file_names:
+            self.redis_client.sadd(redis_key, fn)
+            
+    def detect_new_files(self, cik, directory_path):
+        """
+        Compare all files in the directory_path against the Redis cache for this CIK.
+        Return a list of the full paths of files that are new.
+        """
+        # Load the already processed file names from Redis
+        processed_files_cache = self.load_cache(cik)
+
+        # Gather all files in the local directory
+        all_files = [
+            os.path.join(directory_path, f)
+            for f in os.listdir(directory_path)
+            if os.path.isfile(os.path.join(directory_path, f))
+        ]
+
+        # Determine which files are new (not in the processed_files_cache)
+        new_file_paths = []
+        for file_path in all_files:
+            file_name = os.path.basename(file_path)
+            if file_name not in processed_files_cache:
+                new_file_paths.append(file_path)
+
+        return new_file_paths
 
     def csv_builder(self):
         """
-        Build CSV files for each CIK using Spark.
+        Build CSV files for each CIK using Spark. Write a new CSV for new files only.
         """
         def process_cik(cik, symbol):
             cik_path = os.path.join(self.data_folder, cik)
             if not os.path.exists(cik_path):
-                print(f"Path does not exist for CIK: {cik}")
+                print(f"[csv_builder] Path does not exist for CIK: {cik}")
                 return None
-
-            # List all files for the current CIK 
-            # # Need to update to the code to add up new files(real-time) into either current csv or new csv files
-            # I think pickle cache is required to check for the existence of the currnet files(txt files).
-            files = [os.path.join(cik_path, f) for f in os.listdir(cik_path) if os.path.isfile(os.path.join(cik_path, f))]
-
-            # Process each file and construct rows
-            data = []
-            for file_path in files:
-                date = os.path.basename(file_path).split('.')[0]
+            
+            
+            # Detect new files using Redis-based cache
+            new_files = self.detect_new_files(cik, cik_path)
+            if not new_files:
+                print(f"[csv_builder] No new files found for CIK: {cik}")
+                return None
+            
+            # Parse ONLY the new files
+            new_data = []
+            for file_path in new_files:
+                file_name = os.path.basename(file_path)
+                date = file_name.split('.')[0]
                 body = self.import_file(file_path)  # Replace with appropriate file reading logic
-                data.append((symbol, cik, date, body))
+                new_data.append((symbol, cik, date, body))
+                
+            # Create a Spark DataFrame with the new data
+            new_df = self.spark.createDataFrame(new_data, schema=self.columns)
+            new_df = new_df.dropna(how="all", subset=new_df.columns)
+            new_df = new_df.select(["Name", "CIK", "Date", "Body"])
+            
+            # Sort by date 
+            new_df = new_df.orderBy(col("Date"))
+            
+            # Write the new files to a new CSV path
+            output_path = os.path.join(self.output_folder, cik)
+            new_df.coalesce(1).write.csv(output_path, header=True, mode="append") # Dynamic batch = a set of new files. i.e., a batch size is changed corresponding to a number of new files uploaded to the folder.
+            
+            # Update the Redis cache with these new file names
+            new_file_names = [os.path.basename(f) for f in new_files]
+            self.save_cache(cik, new_file_names)
+            
+            print(f"[csv_builder] Wrote new CSV for {len(new_files)} file(s) under CIK: {cik}.")
+
+            
+
+            # # List all files for the current CIK 
+            # # # Need to update to the code to add up new files(real-time) into either current csv or new csv files
+            # # I think pickle cache is required to check for the existence of the currnet files(txt files).
+            # files = [os.path.join(cik_path, f) for f in os.listdir(cik_path) if os.path.isfile(os.path.join(cik_path, f))]
+
+            # # Process each file and construct rows
+            # data = []
+            # for file_path in files:
+            #     date = os.path.basename(file_path).split('.')[0]
+            #     body = self.import_file(file_path)  # Replace with appropriate file reading logic
+            #     data.append((symbol, cik, date, body))
                 
 
-            # Create a Spark DataFrame from the collected data
-            if data:
-                df = self.spark.createDataFrame(data, schema=self.columns)
-                df = df.dropna(how="all", subset=df.columns)
-                # Keep only relevant columns
-                return df.select(["Name", "CIK", "Date", "Body"])
+            # # Create a Spark DataFrame from the collected data
+            # if data:
+            #     df = self.spark.createDataFrame(data, schema=self.columns)
+            #     df = df.dropna(how="all", subset=df.columns)
+            #     # Keep only relevant columns
+            #     return df.select(["Name", "CIK", "Date", "Body"])
             
-            return None
+            # return None
+
 
         for cik, symbol in self.firms_dict.items():
             output_path = os.path.join(self.output_folder, cik)
-            if os.path.exists(output_path):
-                print(f"CSV file already exists for CIK: {cik}, skipping...") # Not for real-time update 
-                continue
+            # if os.path.exists(output_path):
+            #     print(f"CSV file already exists for CIK: {cik}, skipping...") # Not for real-time update 
+            #     continue
 
             print(f"Processing CIK: {cik}")
             cik_df = process_cik(cik, symbol)
@@ -70,7 +152,7 @@ class ConstructDTM:
                 cik_df = cik_df.orderBy(col("Date"))
                 cik_df.write.csv(output_path, header=True, mode="overwrite")
 
-        print(f"CSV files saved in: {self.output_folder}")
+        print(f"[csv_builder] CSV files saved/updated in: {self.output_folder}")
 
     def process_filings_for_cik_spark(self, spark, data_folder, files_path, firms_dict, firms_ciks, columns, start_date, end_date):
         """
@@ -267,5 +349,5 @@ if __name__ == "__main__":
     # Create pipeline and execute tasks
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
     pipeline.csv_builder()
-    pipeline.process_filings_for_cik_spark(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
+    # pipeline.process_filings_for_cik_spark(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
+    # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
