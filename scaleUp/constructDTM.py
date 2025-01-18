@@ -81,7 +81,6 @@ class ConstructDTM:
                 print(f"[csv_builder] Path does not exist for CIK: {cik}")
                 return None
             
-            
             # Detect new files using Redis-based cache
             new_files = self.detect_new_files(cik, cik_path)
             if not new_files:
@@ -114,30 +113,6 @@ class ConstructDTM:
             
             print(f"[csv_builder] Wrote new CSV for {len(new_files)} file(s) under CIK: {cik}.")
 
-            
-
-            # # List all files for the current CIK 
-            # # # Need to update to the code to add up new files(real-time) into either current csv or new csv files
-            # # I think pickle cache is required to check for the existence of the currnet files(txt files).
-            # files = [os.path.join(cik_path, f) for f in os.listdir(cik_path) if os.path.isfile(os.path.join(cik_path, f))]
-
-            # # Process each file and construct rows
-            # data = []
-            # for file_path in files:
-            #     date = os.path.basename(file_path).split('.')[0]
-            #     body = self.import_file(file_path)  # Replace with appropriate file reading logic
-            #     data.append((symbol, cik, date, body))
-                
-
-            # # Create a Spark DataFrame from the collected data
-            # if data:
-            #     df = self.spark.createDataFrame(data, schema=self.columns)
-            #     df = df.dropna(how="all", subset=df.columns)
-            #     # Keep only relevant columns
-            #     return df.select(["Name", "CIK", "Date", "Body"])
-            
-            # return None
-
 
         for cik, symbol in self.firms_dict.items():
             output_path = os.path.join(self.output_folder, cik)
@@ -153,6 +128,34 @@ class ConstructDTM:
                 cik_df.write.csv(output_path, header=True, mode="overwrite")
 
         print(f"[csv_builder] CSV files saved/updated in: {self.output_folder}")
+        
+    def aggregate_data(self, files_path, firms_ciks):
+        
+        folder = 'company_df'
+        folder_path = os.path.join(files_path, folder)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path, exist_ok=True)
+        
+        csv_files = []
+        for cik in firms_ciks:
+            cik_folder = os.path.join(folder_path, cik)
+            if not os.path.exists(cik_folder):
+                print(f"No folder found for CIK: {cik}")
+                continue
+            files = [f for f in os.listdir(cik_folder) if f.endswith('.csv')]
+            if not files:
+                print(f"No CSV files found for CIK: {cik}")
+                continue
+            for file in tqdm(files):
+                if file.endswith('.csv'):
+                    csv_files.append(pd.read_csv(os.path.join(folder_path, file)))# Read all CSV files in the folder
+        
+        # Concatenate all reports into a single DataFrame
+        csv_files = pd.concat(csv_files)
+        # reset index
+        csv_files.reset_index(drop=True, inplace=True)
+        # Save the DataFrame to a CSV file
+        csv_files.to_csv(os.path.join(files_path, "SP500.csv"), index=False)
 
     def process_filings_for_cik_spark(self, spark, data_folder, files_path, firms_dict, firms_ciks, columns, start_date, end_date):
         """
@@ -351,3 +354,4 @@ if __name__ == "__main__":
     pipeline.csv_builder()
     # pipeline.process_filings_for_cik_spark(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
     # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
+    # pipeline.aggregate_data(save_folder, firms_ciks) # Execute this after processing all CIKs
