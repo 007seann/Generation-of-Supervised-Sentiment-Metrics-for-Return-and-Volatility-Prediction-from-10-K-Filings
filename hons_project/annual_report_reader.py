@@ -16,16 +16,36 @@ from nltk.stem import WordNetLemmatizer
 #from nltk.stem.porter import PorterStemmer
 #from nltk.stem.snowball import SnowballStemmer
 from nltk.corpus import words
-nltk.download('words')
-nltk.download('wordnet')
-nltk.download('omw-1.4')
-nltk.download('stopwords')
-nltk.download('averaged_perceptron_tagger')
+# nltk.download('words')
+# nltk.download('wordnet')
+# nltk.download('omw-1.4')
+# nltk.download('stopwords')
+# nltk.download('averaged_perceptron_tagger')
 from difflib import SequenceMatcher
 import re
 from collections import Counter
 from tqdm import tqdm
 from dateutil.parser import parse
+
+
+# Check if NLTK data files are available
+def check_nltk_data():
+    required_datasets = [
+        'words',
+        'wordnet',
+        'omw-1.4',
+        'stopwords',
+        'averaged_perceptron_tagger'
+    ]
+    for dataset in required_datasets:
+        try:
+            nltk.data.find(f'corpora/{dataset}')
+        except LookupError:
+            print(f"Downloading NLTK data: {dataset}")
+            nltk.download(dataset)
+
+# Call the function to check and download NLTK data if necessary
+check_nltk_data()
 
 
 def reader(file_name, file_loc):

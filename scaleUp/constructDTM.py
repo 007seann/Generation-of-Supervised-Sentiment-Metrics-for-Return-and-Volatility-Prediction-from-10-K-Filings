@@ -8,6 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import the function
 import pandas as pd
 import redis
+import tqdm
 
 
 class ConstructDTM:
@@ -157,7 +158,7 @@ class ConstructDTM:
         # Save the DataFrame to a CSV file
         csv_files.to_csv(os.path.join(files_path, "SP500.csv"), index=False)
 
-    def process_filings_for_cik_spark(self, spark, data_folder, files_path, firms_dict, firms_ciks, columns, start_date, end_date):
+    def process_filings_for_cik_spark(self, spark, files_path, firms_ciks, start_date, end_date):
         """
         Process CIK filings using Spark in a distributed manner, applying the reader function to each file.
         Output : dtm_{cik}.csv
@@ -213,7 +214,6 @@ class ConstructDTM:
 
             vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
 
-            
             # Merge the data
             combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
 
@@ -352,6 +352,6 @@ if __name__ == "__main__":
     # Create pipeline and execute tasks
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
     pipeline.csv_builder()
-    # pipeline.process_filings_for_cik_spark(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
+    pipeline.process_filings_for_cik_spark(spark, save_folder, firms_ciks, start_date, end_date)
+    pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
     # pipeline.aggregate_data(save_folder, firms_ciks) # Execute this after processing all CIKs
