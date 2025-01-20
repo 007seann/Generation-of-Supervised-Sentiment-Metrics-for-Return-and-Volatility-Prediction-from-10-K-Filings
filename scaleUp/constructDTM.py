@@ -1,16 +1,39 @@
+import logging
+
+# Custom logging filter to suppress specific log messages
+class NoInsertFilter(logging.Filter):
+    def filter(self, record):
+        return 'INSERT INTO' not in record.getMessage()
+
+# General logging configuration
+logging.basicConfig(level=logging.WARNING)
+
+# Suppress all SQLAlchemy verbose logs
+logging.getLogger('sqlalchemy.engine').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.pool').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.dialects').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.orm').setLevel(logging.ERROR)
+
+# Apply the custom filter to the SQLAlchemy engine logger
+engine_logger = logging.getLogger('sqlalchemy.engine')
+engine_logger.addFilter(NoInsertFilter())
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
 from pyspark.sql.types import StructType, StructField, StringType
 import sys
 import os
+
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 # Import the function
 import pandas as pd
 import redis
 import tqdm
 import hashlib 
 import datetime
+
 # SQLAlchemy imports for DB-based metadatada
 from sqlalchemy import create_engine, Column, String, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
@@ -51,15 +74,21 @@ class ConstructDTM:
         self.spark.sparkContext.addPyFile("/Users/apple/PROJECT/package/hons_project.zip")
         
         # Initialise Redis connection
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        # self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
         # --------------- Configure Database --------------- #
+        
         # Adjust connection string for your environment
         db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
         self.engine = create_engine(db_url, echo=False)
         self.SessionLocal = sessionmaker(bind=self.engine)
         # Create table if not exists
         Base.metadata.create_all(self.engine)
+        
+        # Explicitly set logging level again before database operations
+        logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.ERROR)
+        logging.getLogger('sqlalchemy.engine.base.Engine').setLevel(logging.ERROR)
+        logging.getLogger('sqlalchemy.engine.base').setLevel(logging.ERROR)
         
         
     # ------------------- Helper Methods ------------------- #    
@@ -93,127 +122,147 @@ class ConstructDTM:
         """
         epoch_time = os.path.getmtime(file_path)
         return datetime.datetime.fromtimestamp(epoch_time)
-    
+
     def _scan_directory_and_update_db(self, directory_path):
         """
-        Scan a directory for new or changed files, updating the DB metadata.
-        - If file doesn't exist in DB, insert a new record.
-        - If file is changed (timestamp/hash), update the record.
-        - If files are missing from disk, mark them is_deleted. (Optional)
-        Returns a list of file paths that are newly added or changed (so we can reprocess them).
+        **Step 1: Pre-fetch Data from the Database**
+        Scan directory and update metadata in PostgreSQL to identify new or changed files.
         """
         session = self.SessionLocal()
         newly_added_or_changed = []
 
         try:
-            # 1) Gather all files from directory
             if not os.path.exists(directory_path):
-                session.close()
-                return []  # No directory => no files
+                return []
 
+            # Gather all files in the directory
             all_files = [
                 os.path.join(directory_path, f)
                 for f in os.listdir(directory_path)
                 if os.path.isfile(os.path.join(directory_path, f))
             ]
 
-            # 2) Convert them to a set for quick membership checks
-            all_files_set = set(all_files)
-
-            # 3) Pull existing DB records that haven't been marked deleted
+            # Fetch metadata from PostgreSQL
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
-            db_paths_set = {record.file_path for record in db_files}
+            db_file_map = {record.file_path: record for record in db_files}
 
-            # 4) Identify new vs. missing
-            new_files = all_files_set - db_paths_set
-            missing_files = db_paths_set - all_files_set
+            # Detect new and updated files
+            for file_path in all_files:
+                file_hash = self.compute_file_hash(file_path)
+                last_modified = self.get_file_modified_time(file_path)
 
-            # 5) Insert new files
-            for fpath in new_files:
-                file_hash = self.compute_file_hash(fpath)
-                mtime = self.get_file_modified_time(fpath)
-                new_record = FileMetadata(
-                    file_path=fpath,
-                    last_modified=mtime,
-                    file_hash=file_hash,
-                    is_deleted=False
-                )
-                session.add(new_record)
-                newly_added_or_changed.append(fpath)
+                if file_path not in db_file_map:
+                    # New file
+                    new_record = FileMetadata(
+                        file_path=file_path,
+                        last_modified=last_modified,
+                        file_hash=file_hash,
+                        is_deleted=False
+                    )
+                    session.add(new_record)
+                    newly_added_or_changed.append(file_path)
+                elif (db_file_map[file_path].file_hash != file_hash or
+                    db_file_map[file_path].last_modified != last_modified):
+                    # Updated file
+                    record = db_file_map[file_path]
+                    record.file_hash = file_hash
+                    record.last_modified = last_modified
+                    newly_added_or_changed.append(file_path)
 
-            # 6) Detect changed files among the intersection
-            intersection_paths = all_files_set.intersection(db_paths_set)
-            for record in db_files:
-                if record.file_path in intersection_paths:
-                    current_mtime = self.get_file_modified_time(record.file_path)
-                    if record.last_modified != current_mtime:
-                        # Possibly re-check content hash
-                        current_hash = self.compute_file_hash(record.file_path)
-                        if current_hash != record.file_hash:
-                            record.file_hash = current_hash
-                            newly_added_or_changed.append(record.file_path)
-                        record.last_modified = current_mtime
-                        session.add(record)
-
-            # 7) Mark missing files as deleted (optional)
-            # Some pipelines prefer to remove them entirely. YMMV.
-            if missing_files:
-                session.query(FileMetadata)\
-                    .filter(FileMetadata.file_path.in_(missing_files))\
-                    .update({FileMetadata.is_deleted: True}, synchronize_session=False)
+            # Mark deleted files
+            existing_files = set(all_files)
+            for file_path, record in db_file_map.items():
+                if file_path not in existing_files:
+                    record.is_deleted = True
 
             session.commit()
 
         except Exception as e:
             session.rollback()
-            print(f"Error scanning directory {directory_path}: {e}")
+            logging.error(f"Error scanning directory {directory_path}: {e}")
         finally:
             session.close()
 
         return newly_added_or_changed
+    # def _scan_directory_and_update_db(self, directory_path):
+    #     """
+    #     Scan a directory for new or changed files, updating the DB metadata.
+    #     - If file doesn't exist in DB, insert a new record.
+    #     - If file is changed (timestamp/hash), update the record.
+    #     - If files are missing from disk, mark them is_deleted. (Optional)
+    #     Returns a list of file paths that are newly added or changed (so we can reprocess them).
+    #     """
 
-        
-    def load_cache(self, cik):
-        """
-        Load the set of already processed file names for a given CIK from Redis.
-        Return a Python set of file names.
-        """
-        redis_key = f"processed_files:{cik}"
-        processed_files = self.redis_client.smembers(redis_key)  # returns a set of bytes
-        # Decode bytes to strings
-        return {file_name.decode('utf-8') for file_name in processed_files}
-    
-    def save_cache(self, cik, file_names):
-        """
-        Add the given file names to the Redis set for a given CIK.
-        """
-        redis_key = f"processed_files:{cik}"
-        for fn in file_names:
-            self.redis_client.sadd(redis_key, fn)
-            
-    def detect_new_files(self, cik, directory_path):
-        """
-        Compare all files in the directory_path against the Redis cache for this CIK.
-        Return a list of the full paths of files that are new.
-        """
-        # Load the already processed file names from Redis
-        processed_files_cache = self.load_cache(cik)
+    #     session = self.SessionLocal()
+    #     newly_added_or_changed = []
 
-        # Gather all files in the local directory
-        all_files = [
-            os.path.join(directory_path, f)
-            for f in os.listdir(directory_path)
-            if os.path.isfile(os.path.join(directory_path, f))
-        ]
+    #     try:
+    #         # 1) Gather all files from directory
+    #         if not os.path.exists(directory_path):
+    #             session.close()
+    #             return []  # No directory => no files
 
-        # Determine which files are new (not in the processed_files_cache)
-        new_file_paths = []
-        for file_path in all_files:
-            file_name = os.path.basename(file_path)
-            if file_name not in processed_files_cache:
-                new_file_paths.append(file_path)
+    #         all_files = [
+    #             os.path.join(directory_path, f)
+    #             for f in os.listdir(directory_path)
+    #             if os.path.isfile(os.path.join(directory_path, f))
+    #         ]
 
-        return new_file_paths
+    #         # 2) Convert them to a set for quick membership checks
+    #         all_files_set = set(all_files)
+
+    #         # 3) Pull existing DB records that haven't been marked deleted
+    #         db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
+    #         db_paths_set = {record.file_path for record in db_files}
+
+    #         # 4) Identify new vs. missing
+    #         new_files = all_files_set - db_paths_set
+    #         missing_files = db_paths_set - all_files_set
+
+    #         # 5) Insert new files
+    #         for fpath in new_files:
+    #             file_hash = self.compute_file_hash(fpath)
+    #             mtime = self.get_file_modified_time(fpath)
+    #             new_record = FileMetadata(
+    #                 file_path=fpath,
+    #                 last_modified=mtime,
+    #                 file_hash=file_hash,
+    #                 is_deleted=False
+    #             )
+    #             session.add(new_record)
+    #             newly_added_or_changed.append(fpath)
+
+    #         # 6) Detect changed files among the intersection
+    #         intersection_paths = all_files_set.intersection(db_paths_set)
+    #         for record in db_files:
+    #             if record.file_path in intersection_paths:
+    #                 current_mtime = self.get_file_modified_time(record.file_path)
+    #                 if record.last_modified != current_mtime:
+    #                     # Possibly re-check content hash
+    #                     current_hash = self.compute_file_hash(record.file_path)
+    #                     if current_hash != record.file_hash:
+    #                         record.file_hash = current_hash
+    #                         newly_added_or_changed.append(record.file_path)
+    #                     record.last_modified = current_mtime
+    #                     session.add(record)
+
+    #         # 7) Mark missing files as deleted (optional)
+    #         # Some pipelines prefer to remove them entirely. YMMV.
+    #         if missing_files:
+    #             session.query(FileMetadata)\
+    #                 .filter(FileMetadata.file_path.in_(missing_files))\
+    #                 .update({FileMetadata.is_deleted: True}, synchronize_session=False)
+
+    #         session.commit()
+
+    #     except Exception as e:
+    #         session.rollback()
+    #         logging.error(f"Error scanning directory {directory_path}: {str(e)}")
+    #     finally:
+    #         session.close()
+
+    #     return newly_added_or_changed
+
     
     # ------------------- csv_builder (Main Entry) ------------------- #
     def csv_builder(self):
@@ -221,6 +270,8 @@ class ConstructDTM:
         Build CSV files for each CIK using Spark, detecting changes via DB metadata.
         Only process & write out CSV for newly added or changed files.
         """
+    
+        
         for cik, symbol in self.firms_dict.items():
             cik_path = os.path.join(self.data_folder, cik)
             print(f"[csv_builder] Processing CIK: {cik}")
@@ -255,66 +306,6 @@ class ConstructDTM:
         print(f"[csv_builder] CSV files saved/updated in: {self.output_folder}")
 
 
-
-    # def csv_builder(self):
-    #     """
-    #     Build CSV files for each CIK using Spark, detecting changes via DB metadata.
-    #     Only process & write out CSV for newly added or changed files.
-    #     """
-    #     def process_cik(cik, symbol):
-    #         cik_path = os.path.join(self.data_folder, cik)
-    #         if not os.path.exists(cik_path):
-    #             print(f"[csv_builder] Path does not exist for CIK: {cik}")
-    #             return None
-            
-    #         # Detect new files using Redis-based cache
-    #         new_files = self.detect_new_files(cik, cik_path)
-    #         if not new_files:
-    #             print(f"[csv_builder] No new files found for CIK: {cik}")
-    #             return None
-            
-    #         # Parse ONLY the new files
-    #         new_data = []
-    #         for file_path in new_files:
-    #             file_name = os.path.basename(file_path)
-    #             date = file_name.split('.')[0]
-    #             body = self.import_file(file_path)  # Replace with appropriate file reading logic
-    #             new_data.append((symbol, cik, date, body))
-                
-    #         # Create a Spark DataFrame with the new data
-    #         new_df = self.spark.createDataFrame(new_data, schema=self.columns)
-    #         new_df = new_df.dropna(how="all", subset=new_df.columns)
-    #         new_df = new_df.select(["Name", "CIK", "Date", "Body"])
-            
-    #         # Sort by date 
-    #         new_df = new_df.orderBy(col("Date"))
-            
-    #         # Write the new files to a new CSV path
-    #         output_path = os.path.join(self.output_folder, cik)
-    #         new_df.coalesce(1).write.csv(output_path, header=True, mode="append") # Dynamic batch = a set of new files. i.e., a batch size is changed corresponding to a number of new files uploaded to the folder.
-            
-    #         # Update the Redis cache with these new file names
-    #         new_file_names = [os.path.basename(f) for f in new_files]
-    #         self.save_cache(cik, new_file_names)
-            
-    #         print(f"[csv_builder] Wrote new CSV for {len(new_files)} file(s) under CIK: {cik}.")
-
-
-    #     for cik, symbol in self.firms_dict.items():
-    #         output_path = os.path.join(self.output_folder, cik)
-    #         # if os.path.exists(output_path):
-    #         #     print(f"CSV file already exists for CIK: {cik}, skipping...") # Not for real-time update 
-    #         #     continue
-
-    #         print(f"[csv_builder] Processing CIK: {cik}")
-    #         cik_df = process_cik(cik, symbol)
-    #         if cik_df:
-    #             # Save the DataFrame as a CSV file, sorted by date
-    #             cik_df = cik_df.orderBy(col("Date"))
-    #             cik_df.write.csv(output_path, header=True, mode="overwrite")
-
-    #     print(f"[csv_builder] CSV files saved/updated in: {self.output_folder}")
-        
     def aggregate_data(self, files_path, firms_ciks):
         
         folder = 'company_df'
@@ -345,8 +336,8 @@ class ConstructDTM:
 
     def process_filings_for_cik_spark(self, spark, files_path, firms_ciks, start_date, end_date):
         """
-        Process CIK filings using Spark in a distributed manner, applying the reader function to each file.
-        Output : dtm_{cik}.csv
+        Incrementally update dtm_{cik}.csv using PostgreSQL metadata tracking.
+        Only processes new, updated, or changed files.
         """
         folder = 'company_df'
         folder_path = os.path.join(files_path, folder)
@@ -355,75 +346,205 @@ class ConstructDTM:
             
         
         def process_single_cik(cik):
+            """
+            Process and update the `dtm_{cik}.csv` file for a single CIK.
+            """
             import os
             import pandas as pd
             from hons_project.vol_reader_fun import vol_reader
             from hons_project.annual_report_reader import reader
             
-            
+            session = self.SessionLocal()
             # Define the output path for the processed CSV file
             output_path = os.path.join(files_path, f"processed/dtm_{cik}.csv")
-
-            # Check if the output file already exists
-            # Not for real-time update 
-            # Need to be changed to update the dtm_{cik}.csv file
-            # Refer to def append_to_dtm code in the Notion
-            if os.path.exists(output_path):
-                print(f"CSV file already exists for CIK: {cik}, skipping...")
-                return None
-
-            cik_folder = os.path.join(folder_path, cik)
-            if not os.path.exists(cik_folder):
-                print(f"No folder found for CIK: {cik}")
-                return None
-
-            # Combine all processed files for the CIK into a single DataFrame
-            processed_data = []
-            for file_name in os.listdir(cik_folder):
-                if not file_name.endswith('.csv'):
-                    continue
-                # Apply the reader function
-                processed_file = reader(file_name, file_loc=cik_folder)
-                # processed_file.index = processed_file.index.tz_localize("UTC")
-
-                if processed_file is not None:
-                    processed_data.append(processed_file)
-            if not processed_data:
-                print(f"No valid files processed for CIK: {cik}")
-                return None
-
-            # Combine all processed files into a DataFrames
-            combined_data = pd.concat(processed_data)
-            # Convert the processed data to a Spark DataFrame
-            # Read and join with volatility data
-
-            vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
-
-            # Merge the data
-            combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
-
-            # Add the '_cik' column
-            combined_data["_cik"] = cik
-
-            # Convert the index to a column
-            combined_data = combined_data.reset_index()
-
-            # Reorder columns
-            columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-            new_column_order = columns_to_move + [col for col in combined_data.columns if col not in columns_to_move]
-            combined = combined_data[new_column_order]
-
-            # Filter rows with missing volatility data
-            combined_data = combined_data[combined_data["_ret"].notnull()]
-
-            # Save the processed DataFrame to a file
-            save_folder = os.path.join(files_path, "processed")
-            if not os.path.exists(save_folder):
-                os.makedirs(save_folder)
             
-            combined.to_csv(output_path, index=False)
+            try:
+                # Step 1: Load existing metadata for this CIK from PostgreSQL
+                db_files = session.query(FileMetadata).filter(
+                    FileMetadata.file_path.like(f"%/{cik}/%"),  # Match files under this CIK folder
+                    FileMetadata.is_deleted == False
+                ).all()
+
+                # Create a set of file paths already in the DB
+                db_files_map = {record.file_path: record for record in db_files}
+                
+                # Step 2: Gather all files in the CIK folder
+                cik_folder = os.path.join(folder_path, cik)
+                if not os.path.exists(cik_folder):
+                    print(f"No folder found for CIK: {cik}")
+                    return None
+
+                all_files = [
+                    os.path.join(cik_folder, file_name)
+                    for file_name in os.listdir(cik_folder)
+                    if file_name.endswith('.csv')
+                ]
+                
+                # Step 3: Detect new and updated files
+                new_files = []
+                updated_files = []
+                for file_path in all_files:
+                    file_hash = self.compute_file_hash(file_path)
+                    last_modified = self.get_file_modified_time(file_path)
+
+                    if file_path not in db_files_map:
+                        # New file
+                        new_files.append(file_path)
+                    elif (db_files_map[file_path].file_hash != file_hash or
+                        db_files_map[file_path].last_modified != last_modified):
+                        # Updated file
+                        updated_files.append(file_path)
+                        
+                # Mark deleted files in the DB
+                existing_file_paths = set(all_files)
+                missing_files = set(db_files_map.keys()) - existing_file_paths
+                if missing_files:
+                    session.query(FileMetadata).filter(
+                        FileMetadata.file_path.in_(missing_files)
+                    ).update({FileMetadata.is_deleted: True}, synchronize_session=False)
+
+                session.commit()
+                
+                # Step 4: Process new and updated files
+                processed_data = []
+                
+                # for file_path in new_files + updated_files:
+                #     file_name = os.path.basename(file_path)
+                #     date_str = file_name.split('.')[0]
+                #     body = self.import_file(file_path)
+                #     processed_data.append((cik, date_str, body))
+                
+                # Add readers preprocessing procedures    
+                for file_path in new_files + updated_files:
+                    file_name = os.path.basename(file_path)
+                    processed_file = reader(file_name, file_loc=cik_folder)
+                    if processed_file is not None:
+                        processed_data.append(processed_file)
+                    
+
+                    # Update or insert file metadata in DB
+                    if file_path in db_files_map:
+                        # Update existing record
+                        record = db_files_map[file_path]
+                        record.file_hash = file_hash
+                        record.last_modified = last_modified
+                    else:
+                        # Insert new record
+                        new_record = FileMetadata(
+                            file_path=file_path,
+                            last_modified=last_modified,
+                            file_hash=file_hash,
+                            is_deleted=False
+                        )
+                        session.add(new_record)
+
+                session.commit()
+                
+                # Step 5: Preprocess and merge with volatility data
+                if processed_data:
+                    combined_data = pd.concat(processed_data)
+                    vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
+
+                    # Merge the data
+                    combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
+
+                    # Add the '_cik' column
+                    combined_data["_cik"] = cik
+
+                    # Convert the index to a column and reorder columns
+                    combined_data = combined_data.reset_index()
+                    columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
+                    new_column_order = columns_to_move + [col for col in combined_data.columns if col not in columns_to_move]
+                    combined_data = combined_data[new_column_order]
+
+                    # Filter rows with missing volatility data
+                    combined_data = combined_data[combined_data["_ret"].notnull()]
+
+                    # Convert to Spark DataFrame
+                    new_df = spark.createDataFrame(combined_data)
+
+                    # Step 6: Merge with existing CSV data
+                    if os.path.exists(output_path):
+                        existing_df = spark.read.csv(output_path, header=True, inferSchema=True)
+                        combined_df = existing_df.union(new_df).dropDuplicates(["Date", "_cik", "_vol", "_ret"])
+                    else:
+                        combined_df = new_df
+
+                    # Write updated CSV to file
+                    combined_df.coalesce(1).write.csv(output_path, header=True, mode="overwrite")
+                    print(f"[process_filings_for_cik_spark] Updated dtm_{cik}.csv with {len(processed_data)} new/updated records.")
+                else:
+                    print(f"[process_filings_for_cik_spark] No new or updated files for CIK: {cik}")
+
             
-            print(f"Processed CIK {cik} and saved to {output_path}")
+            except Exception as e:
+                session.rollback()
+                print(f"Error processing CIK {cik}: {e}")
+            finally:
+                session.close()        
+
+        
+            # # Check if the output file already exists
+            # # Not for real-time update 
+            # # Need to be changed to update the dtm_{cik}.csv file
+            # # Refer to def append_to_dtm code in the Notion
+            # if os.path.exists(output_path):
+            #     print(f"CSV file already exists for CIK: {cik}, skipping...")
+            #     return None
+
+            # cik_folder = os.path.join(folder_path, cik)
+            # if not os.path.exists(cik_folder):
+            #     print(f"No folder found for CIK: {cik}")
+            #     return None
+
+            # # Combine all processed files for the CIK into a single DataFrame
+            # processed_data = []
+            # for file_name in os.listdir(cik_folder):
+            #     if not file_name.endswith('.csv'):
+            #         continue
+            #     # Apply the reader function
+            #     processed_file = reader(file_name, file_loc=cik_folder)
+            #     # processed_file.index = processed_file.index.tz_localize("UTC")
+
+            #     if processed_file is not None:
+            #         processed_data.append(processed_file)
+            # if not processed_data:
+            #     print(f"No valid files processed for CIK: {cik}")
+            #     return None
+
+            # # Combine all processed files into a DataFrames
+            # combined_data = pd.concat(processed_data)
+            # # Convert the processed data to a Spark DataFrame
+            # # Read and join with volatility data
+
+            # vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
+
+            # # Merge the data
+            # combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
+
+            # # Add the '_cik' column
+            # combined_data["_cik"] = cik
+
+            # # Convert the index to a column
+            # combined_data = combined_data.reset_index()
+
+            # # Reorder columns
+            # columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
+            # new_column_order = columns_to_move + [col for col in combined_data.columns if col not in columns_to_move]
+            # combined = combined_data[new_column_order]
+
+            # # Filter rows with missing volatility data
+            # combined_data = combined_data[combined_data["_ret"].notnull()]
+
+            # # Save the processed DataFrame to a file
+            # save_folder = os.path.join(files_path, "processed")
+            # if not os.path.exists(save_folder):
+            #     os.makedirs(save_folder)
+            
+            # combined.to_csv(output_path, index=False)
+            
+            # print(f"Processed CIK {cik} and saved to {output_path}")
+
             
         # Parallel processing of all CIKs
         cik_rdd = spark.sparkContext.parallelize(firms_ciks)
