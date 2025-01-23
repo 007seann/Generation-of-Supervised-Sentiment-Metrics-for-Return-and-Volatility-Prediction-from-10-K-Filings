@@ -111,15 +111,12 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
                 "last_modified": last_modified
             })
 
-        # 3. Process new/changed files
-        processed_dataframes = []
-        for file_path in new_or_changed_files:
-            file_name = os.path.basename(file_path)
 
-            df = reader(file_name, file_loc=cik_folder)
-
-            if df is not None:
-                processed_dataframes.append(df)
+        processed_dataframes = [
+            reader(os.path.basename(file_path), file_loc=cik_folder)
+            for file_path in new_or_changed_files
+            if reader(os.path.basename(file_path), file_loc=cik_folder) is not None
+        ]
 
         if not processed_dataframes:
             # No new data to write
@@ -131,37 +128,38 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
                 "metadata": metadata_records,
                 "output_file": None
             }
-
-        # Merge & add volatility data
+            
+        # Combine and process the data
         combined = pd.concat(processed_dataframes)
+        print('combined:', combined)
+        # Add volatility data
         vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
+        combined.reset_index(inplace=True)
+        first_column_name = combined.columns[0]
+        combined = pd.merge(combined.rename(columns={first_column_name: "Date"}), vol_data.reset_index(), how="inner", on="Date")
         
-        combined = combined.reset_index()  # Convert index to column
-        combined = combined.rename(columns={"level_0": "Date"})
-        vol_data = vol_data.reset_index()  # Convert index to column
-        combined = pd.merge(combined, vol_data, how="inner", on="Date")
-
-        # Create the new column DataFrame
-        new_column = pd.DataFrame({"_cik": [cik] * len(combined)}, index=combined.index)
-        # Concatenate the column with the original DataFrame
-        combined = pd.concat([combined, new_column], axis=1)
-        combined.reset_index(drop=True, inplace=True)
-
-        # Reorder columns
+        # Add CIK column and reorder columns
+        combined["_cik"] = cik
         columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-        remaining_cols = [c for c in combined.columns if c not in columns_to_move]
+        remaining_cols = [col for col in combined.columns if col not in columns_to_move]
         combined = combined[columns_to_move + remaining_cols]
 
-        # Filter invalid rows
-        combined = combined[combined["_ret"].notnull()]
-
-        # Write to Parquet
-        folder_name = 'processed'
-        save_path = os.path.join(save_folder, folder_name)
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        out_file_name = f"dtm_{cik}.parquet"
-        out_file_path = os.path.join(save_path, out_file_name)
+        # Filter invalid rows and write to Parquet
+        combined = combined[combined["_ret"].notna()]
+        
+        if processed_dataframes:
+            # Update the existing dtm datasets
+            existing_files = f"dtm_{cik}.parquet"
+            existing_files_path = os.path.join(save_folder, 'processed', existing_files)
+            if os.path.exists(existing_files_path):
+                existing_files_df = pd.read_parquet(existing_files_path, engine='pyarrow')
+                combined = pd.concat([existing_files_df, combined])
+                combined.drop_duplicates(inplace=True)
+                combined = combined.fillna(0.0)
+            
+        save_path = os.path.join(save_folder, 'processed')
+        os.makedirs(save_path, exist_ok=True)
+        out_file_path = os.path.join(save_path, f"dtm_{cik}.parquet")
         combined.to_parquet(out_file_path, index=False)
 
         # Update metadata
