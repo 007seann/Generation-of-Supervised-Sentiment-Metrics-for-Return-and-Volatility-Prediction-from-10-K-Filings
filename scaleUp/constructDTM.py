@@ -651,7 +651,7 @@ class ConstructDTM:
             # 4) Write the new files to CSV
             output_path = os.path.join(self.output_folder, cik)
             # We can append with coalesce(1) => single file per new batch, or multiple part files.
-            new_df.coalesce(1).write.csv(output_path, header=True, mode="append")
+            new_df.coalesce(1).write.parquet(output_path, mode="append")
 
             print(f"[csv_builder] Wrote/updated CSV for {len(changed_files)} file(s) under CIK: {cik}")
 
