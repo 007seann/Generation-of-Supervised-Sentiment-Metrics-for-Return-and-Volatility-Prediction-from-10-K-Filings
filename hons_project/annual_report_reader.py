@@ -26,8 +26,11 @@ import re
 from collections import Counter
 from tqdm import tqdm
 from dateutil.parser import parse
+import logging
+import os
 
-
+NLTK_DATA_DIR = '/Users/apple/PROJECT/package/nltk_data'
+os.environ['NLTK_DATA'] = NLTK_DATA_DIR 
 # Check if NLTK data files are available
 def check_nltk_data():
     required_datasets = [
@@ -39,78 +42,58 @@ def check_nltk_data():
     ]
     for dataset in required_datasets:
         try:
-            nltk.data.find(f'corpora/{dataset}')
+            nltk.data.find(f'corpora/{dataset}', paths=[NLTK_DATA_DIR])
         except LookupError:
             print(f"Downloading NLTK data: {dataset}")
-            nltk.download(dataset)
+            nltk.download(dataset, download_dir=NLTK_DATA_DIR)
 
 # Call the function to check and download NLTK data if necessary
 check_nltk_data()
 
 
 def reader(file_name, file_loc):
-    import csv
-    def read_csv_with_detected_delimiter(file_path, fallback_delimiter='\t'):
-        """
-        Reads a CSV file, dynamically detecting the delimiter.
-        
-        Parameters:
-        file_path (str): Path to the CSV file.
-
-        Returns:
-        pd.DataFrame: A pandas DataFrame of the file's content.
-        """
-        try:
-            with open(file_path, 'r', encoding='utf-8') as file:
-                sample = file.read(1024)  # Read a small sample to infer delimiter
-                sniffer = csv.Sniffer()
-                detected_dialect = sniffer.sniff(sample)
-                detected_delimiter = detected_dialect.delimiter
-                print(f"Detected delimiter: {detected_delimiter}")
-                return pd.read_csv(file_path, delimiter=detected_delimiter)
-        except (csv.Error, UnicodeDecodeError) as e:
-            print(f"Error detecting delimiter: {e}")
-            print(f"Falling back to default delimiter: '{fallback_delimiter}'")
-            return pd.read_csv(file_path, delimiter=fallback_delimiter)
-    
-    
     file_path = f'{file_loc}/{file_name}'
-    # df = read_csv_with_detected_delimiter(file_path)
-    df = pd.read_csv(file_path, usecols=[0,1,2,3],delimiter=',', header=0)
-    # df = df.drop(df.columns[0], axis = 1) # Drop index column
-    # df = df.drop(columns = [])
+    print('preprocessing...')
+    try:
+        # Read the Parquet file
+        df = pd.read_parquet(file_path, engine='pyarrow')
+    except Exception as e:
+        logging.error(f"Error reading file {file_path}: {e}")
+        return None, None
+    
     N = df.shape[0]
-    print(f'--- Total Articles: {N} ---')
+    # print(f'--- Total Articles: {N} ---')
     
     #%% DETERMINE VOCABULARY
     
-    print('Extracting types')
+    # print('Extracting types')
     vocab = set()
     for doc in tqdm(range(N)):
-        vocab = vocab.union(set(word_tokenize(df['Body'][doc].lower())))
-    
-    print(f'- Vocam size: {len(vocab)}')
+        vocab.update(set(word_tokenize(df['Body'][doc].lower())))
+    # print(f'- Vocam size: {len(vocab)}')
     
     # Remove non-words
-    print('Removing non-alphabetic tokens')
+    # print('Removing non-alphabetic tokens')
     vocab = set([w for w in vocab if re.match(r'[^\W\d]*$', w)])
-    print(f'- Vocab size: {len(vocab)}')
+    # print(f'- Vocab size: {len(vocab)}')
     
     # Rmove stopwords
-    print('Removing stopwords')
-    vocab = vocab.difference(set(stopwords.words('english')))
-    print(f' -- Vocab size: {len(vocab)}')
+    # print('Removing stopwords')
+    stop_words = set(stopwords.words('english'))
+    vocab -= stop_words
+    # print(f' -- Vocab size: {len(vocab)}')
     
     # Remove Lemmatising
-    print('Lemmatising')
+    # print('Lemmatising')
     lemmatizer = WordNetLemmatizer()
     vocab = set([lemmatizer.lemmatize(w) for w in vocab])
-    print(f'- Vocab size: {len(vocab)}')
+    # print(f'- Vocab size: {len(vocab)}')
     
     # Remove non-english words ==> also removes proper nouns
-    print('Removing non-english words')
-    vocab = vocab.intersection(words.words())
-    print(f'- Vocab size: {len(vocab)}')
+    # print('Removing non-english words')
+    english_words = set(words.words())
+    vocab &= english_words
+    # print(f'- Vocab size: {len(vocab)}')
     
     M = len(vocab) # Vocab size
     vocab_list = list(vocab)
@@ -125,18 +108,22 @@ def reader(file_name, file_loc):
         terms = [w for w in terms if w in vocab]
         return terms
     
-    print('Constructing document-term matrix')
-    D = np.zeros((N , M)) # NxM document-term matrix
+    # Construct document-term matrix
+    # print("Constructing document-term matrix")
+    data = []
+    index = []
     
     for doc in tqdm(range(N)):
         terms = clean(df['Body'][doc])
         term_counts = Counter(terms)
-        D[doc,:] = [term_counts[term] for term in vocab_list]
-    print('\n')
-    
-    # Converting to dataframe
-    D_df = pd.DataFrame(D, index=df['Date'], columns=vocab_list)
+        row = {term: term_counts[term] for term in term_counts if term in vocab_list}
+        data.append(row)
+        index.append(df['Date'][doc])
+
+    # Create DataFrame from list of dictionaries
+    D_df = pd.DataFrame(data, index=index).fillna(0)
     D_df.index = pd.to_datetime(D_df.index)
+   
     
     
     """

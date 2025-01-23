@@ -1,468 +1,34 @@
-import logging
-import atexit
-import multiprocessing
 
-def _cleanup_multiprocessing_resources():
-    """
-    Cleanup function to release any leftover multiprocessing resources
-    like semaphores, locks, or Pools at program exit.
-    """
-    # If you have a Pool, close and join it here, e.g.:
-    # if your_pool_variable is not None:
-    #     your_pool_variable.close()
-    #     your_pool_variable.join()
-
-    # Last resort: forcibly terminate active child processes
-    for proc in multiprocessing.active_children():
-        try:
-            proc.terminate()
-        except Exception as ex:
-            pass
-
-# Register the cleanup function to run at interpreter shutdown
-atexit.register(_cleanup_multiprocessing_resources)
-
-
-# Custom logging filter to suppress specific log messages
-class NoInsertFilter(logging.Filter):
-    def filter(self, record):
-        return 'INSERT INTO' not in record.getMessage()
-
-# General logging configuration
-logging.basicConfig(level=logging.WARNING)
-
-# Suppress all SQLAlchemy verbose logs
-logging.getLogger('sqlalchemy.engine').setLevel(logging.ERROR)
-logging.getLogger('sqlalchemy.pool').setLevel(logging.ERROR)
-logging.getLogger('sqlalchemy.dialects').setLevel(logging.ERROR)
-logging.getLogger('sqlalchemy.orm').setLevel(logging.ERROR)
-
-# Apply the custom filter to the SQLAlchemy engine logger
-engine_logger = logging.getLogger('sqlalchemy.engine')
-engine_logger.addFilter(NoInsertFilter())
-
+from pipeline import _cleanup_multiprocessing_resources, run_process_for_cik, worker_process_cik, worker_process_cik2
+from metadata import FileMetadata
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine
+
 import pyspark.sql.functions as F
-from pyspark.sql.types import StructType, StructField, StringType
+
 import sys
 import os
 import tqdm
+import hashlib
+import datetime
+import logging
+import atexit
+import multiprocessing
+import pandas as pd
 
 
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-
-# SQLAlchemy imports for DB-based metadatada
-from sqlalchemy import create_engine, Column, String, DateTime, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-
-# Configure the connection pool
-def get_engine():
-    db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
-    engine = create_engine(db_url, pool_size=10, max_overflow=5, echo=False)
-    return engine
+# Register the cleanup function to run at interpreter shutdown
+atexit.register(_cleanup_multiprocessing_resources)
 
 # Create a session maker using the pooled engine
-engine = get_engine()
-SessionLocal = sessionmaker(bind=engine)
+# engine = get_engine()
+# SessionLocal = sessionmaker(bind=engine)
 # ------------------ SQLAlchemy Setup ------------------ #
-Base = declarative_base()
-
-# ------------------ Top Level Worker Functions ------------------ #
-import os
-import hashlib
-import datetime
-import pandas as pd
-
-def compute_file_hash(file_path, chunk_size=65536):
-    """Serializable helper function for computing file hash."""
-    md5 = hashlib.md5()
-    with open(file_path, 'rb') as f:
-        while True:
-            data = f.read(chunk_size)
-            if not data:
-                break
-            md5.update(data)
-    return md5.hexdigest()
-
-def get_file_modified_time(file_path):
-    """Serializable helper function for getting file modification time."""
-    epoch_time = os.path.getmtime(file_path)
-    return datetime.datetime.fromtimestamp(epoch_time)
-
-
-def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_url):
-    """
-    Worker function invoked by Spark.
-    1) Creates a SQLAlchemy session locally (no references to the driver session_maker).
-    2) Checks PostgreSQL for file metadata for this CIK.
-    3) Processes new/changed files, writes Parquet, updates metadata.
-    """
-    from hons_project.annual_report_reader import reader
-    from hons_project.vol_reader_fun import vol_reader
-
-    # Late imports of your FileMetadata model if needed
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.exc import SQLAlchemyError
-    engine = create_engine(db_url, echo=False)
-    SessionLocal = sessionmaker(bind=engine)
-
-    # -- Build paths --
-    cik_folder = os.path.join(folder_path, cik)
-    if not os.path.exists(cik_folder):
-        return {
-            "cik": cik,
-            "metadata": [],
-            "output_file": None  # No data returned
-        }
-
-    session = SessionLocal()
-    try:
-        # 1. Fetch existing file metadata from PostgreSQL
-        existing_files = session.query(FileMetadata).filter(FileMetadata.file_path.like(f"{cik_folder}%")).all()
-        existing_metadata = {f.file_path: f for f in existing_files}
-
-        # 2. Identify all CSV files
-        all_files = [
-            os.path.join(cik_folder, f)
-            for f in os.listdir(cik_folder)
-            if f.endswith('.csv')
-        ]
-
-        metadata_records = []
-        new_or_changed_files = []
-
-        for file_path in all_files:
-            file_hash = compute_file_hash(file_path)
-            last_modified = get_file_modified_time(file_path)
-
-            # If new or changed, mark for processing
-            if (file_path not in existing_metadata
-                or existing_metadata[file_path].file_hash != file_hash
-                or existing_metadata[file_path].last_modified != last_modified):
-                new_or_changed_files.append(file_path)
-
-            metadata_records.append({
-                "file_path": file_path,
-                "file_hash": file_hash,
-                "last_modified": last_modified
-            })
-
-        # 3. Process new/changed files
-        processed_dataframes = []
-        for file_path in new_or_changed_files:
-            file_name = os.path.basename(file_path)
-            df = reader(file_name, file_loc=cik_folder)
-            if df is not None:
-                processed_dataframes.append(df)
-
-        if not processed_dataframes:
-            # No new data to write
-            for m in metadata_records:
-                _upsert_metadata(session, m, cik)
-            session.commit()
-            return {
-                "cik": cik,
-                "metadata": metadata_records,
-                "output_file": None
-            }
-
-        # Merge & add volatility data
-        combined = pd.concat(processed_dataframes)
-        vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
-        combined = pd.merge(combined, vol_data, how="inner", on="Date")
-        combined["_cik"] = cik
-        combined.reset_index(drop=True, inplace=True)
-
-        # Reorder columns
-        columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-        remaining_cols = [c for c in combined.columns if c not in columns_to_move]
-        combined = combined[columns_to_move + remaining_cols]
-
-        # Filter invalid rows
-        combined = combined[combined["_ret"].notnull()]
-
-        # Write to Parquet
-        folder_name = 'processed'
-        save_path = os.path.join(save_folder, folder_name)
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        out_file_name = f"dtm_{cik}.parquet"
-        out_file_path = os.path.join(save_path, out_file_name)
-        combined.to_parquet(out_file_path, index=False)
-
-        # Update metadata
-        for m in metadata_records:
-            _upsert_metadata(session, m, cik)
-
-        session.commit()
-
-        return {
-            "cik": cik,
-            "metadata": metadata_records,
-            "output_file": out_file_path
-        }
-
-    except SQLAlchemyError as e:
-        session.rollback()
-        logging.error(f"[{cik}] DB Error: {e}")
-        return {"cik": cik, "metadata": [], "output_file": None}
-    except Exception as e:
-        session.rollback()
-        logging.error(f"[{cik}] Processing Error: {e}")
-        return {"cik": cik, "metadata": [], "output_file": None}
-    finally:
-        session.close()
-
-
-def _upsert_metadata(session, meta_dict, cik):
-    """Helper to insert or update the FileMetadata row."""
-    file_path = meta_dict["file_path"]
-    record = session.query(FileMetadata).filter_by(file_path=file_path).first()
-    if record:
-        record.file_hash = meta_dict["file_hash"]
-        record.last_modified = meta_dict["last_modified"]
-        record.is_deleted = False
-    else:
-        new_record = FileMetadata(
-            file_path=file_path,
-            last_modified=meta_dict["last_modified"],
-            file_hash=meta_dict["file_hash"],
-            is_deleted=False,
-            cik = cik
-        )
-        session.add(new_record)
-
-def worker_process_cik(cik, save_folder, folder_path, start_date, end_date, session_maker):
-    """
-    Processes files in folder_path/<CIK>:
-    1. Checks PostgreSQL for metadata to identify new or changed files.
-    2. Reads & processes only new/changed files.
-    3. Writes results to Parquet and updates metadata in PostgreSQL.
-    """
-    from hons_project.annual_report_reader import reader
-    from hons_project.vol_reader_fun import vol_reader
-    import pandas as pd
-    import os
-
-    cik_folder = os.path.join(folder_path, cik)
-    if not os.path.exists(cik_folder):
-        return {
-            "cik": cik,
-            "metadata": [],
-            "output_file": None  # No data returned
-        }
-
-    # Open a session with PostgreSQL
-    session = session_maker()
-    try:
-        # Fetch metadata for this CIK from PostgreSQL
-        existing_files = session.query(FileMetadata).filter(FileMetadata.file_path.like(f"{cik_folder}%")).all()
-        existing_metadata = {f.file_path: f for f in existing_files}
-
-        # Gather all CSV files in the folder
-        all_files = [
-            os.path.join(cik_folder, f)
-            for f in os.listdir(cik_folder)
-            if f.endswith('.csv')
-        ]
-
-        # Lists for metadata and processed files
-        metadata_records = []
-        new_or_changed_files = []
-
-        # Identify new/changed files
-        for file_path in all_files:
-            file_hash = compute_file_hash(file_path)
-            last_modified = get_file_modified_time(file_path)
-
-            # Check if the file is new or changed
-            if (
-                file_path not in existing_metadata or
-                existing_metadata[file_path].file_hash != file_hash or
-                existing_metadata[file_path].last_modified != last_modified
-            ):
-                new_or_changed_files.append(file_path)
-
-            # Always update the metadata for this file
-            metadata_records.append({
-                "file_path": file_path,
-                "file_hash": file_hash,
-                "last_modified": last_modified
-            })
-
-        # Process new/changed files
-        processed_dataframes = []
-        for file_path in new_or_changed_files:
-            file_name = os.path.basename(file_path)
-            df = reader(file_name, file_loc=cik_folder) # If executing the reader function with parquet files, then more efficient?
-            if df is not None:
-                processed_dataframes.append(df)
-
-        # Combine processed files and add volatility data
-        if not processed_dataframes:
-            return {
-                "cik": cik,
-                "metadata": metadata_records,
-                "output_file": None  # No data to write
-            }
-
-        combined = pd.concat(processed_dataframes)
-        vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
-        combined = pd.merge(combined, vol_data, how="inner", on="Date")
-        combined["_cik"] = cik
-        combined.reset_index(drop=True, inplace=True)
-
-        # Reorder columns
-        columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-        remaining_cols = [c for c in combined.columns if c not in columns_to_move]
-        combined = combined[columns_to_move + remaining_cols]
-
-        # Filter rows with missing _ret values
-        combined = combined[combined["_ret"].notnull()]
-
-        folder_name = 'processed'
-        save_path = os.path.join(save_folder, folder_name)
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        out_file_name = f"dtm_{cik}.parquet"
-        out_file_path = os.path.join(save_path, out_file_name)
-        combined.to_parquet(out_file_path, index=False)
-
-        # Write results to Parquet
-        # out_file_name = f"{cik}_processed.parquet"
-        # out_file_path = os.path.join(cik_folder, out_file_name)
-        # combined.to_parquet(out_file_path, index=False)
-        
-        # Seems that process_cik and concatenate code should be combined?
-
-        # Update metadata in PostgreSQL
-        for m in metadata_records:
-            db_record = session.query(FileMetadata).filter_by(file_path=m["file_path"]).first()
-            if db_record:
-                # Update existing record
-                db_record.file_hash = m["file_hash"]
-                db_record.last_modified = m["last_modified"]
-                db_record.is_deleted = False
-            else:
-                # Insert new record
-                new_record = FileMetadata(
-                    file_path=m["file_path"],
-                    last_modified=m["last_modified"],
-                    file_hash=m["file_hash"],
-                    is_deleted=False,
-                    cik = cik
-                )
-                session.add(new_record)
-
-        session.commit()
-
-        return {
-            "cik": cik,
-            "metadata": metadata_records,
-            "output_file": out_file_path
-        }
-
-    except Exception as e:
-        session.rollback()
-        logging.error(f"Error processing CIK {cik}: {e}")
-        return {
-            "cik": cik,
-            "metadata": [],
-            "output_file": None
-        }
-    finally:
-        session.close()
-
-
-def worker_process_cik2(cik, folder_path, start_date, end_date):
-    """
-    The main worker function. It:
-    1) Scans all CSV files in the folder_path/<CIK> directory.
-    2) Applies "reader" and "vol_reader" logic (both must be serializable or importable).
-    3) Returns:
-        - A list of metadata records for centralized DB updates.
-        - Possibly the processed data as dictionaries to be merged or saved later.
-    """
-    from hons_project.annual_report_reader import reader
-    from hons_project.vol_reader_fun import vol_reader
-    import os
-
-    cik_folder = os.path.join(folder_path, cik)
-    if not os.path.exists(cik_folder):
-        # No data for this CIK
-        return {"cik": cik, "metadata": [], "processed_data": []}
-
-    # Gather all CSV files
-    all_files = [
-        os.path.join(cik_folder, f)
-        for f in os.listdir(cik_folder)
-        if f.endswith('.csv')
-    ]
-
-    # Lists for metadata and processed data
-    metadata_records = []
-    processed_dataframes = []
-
-    for file_path in all_files:
-        # Collect file metadata
-        file_hash = compute_file_hash(file_path)
-        last_modified = get_file_modified_time(file_path)
-
-        metadata_records.append({
-            "file_path": file_path,
-            "file_hash": file_hash,
-            "last_modified": last_modified
-        })
-
-        # Apply "reader" logic
-        file_name = os.path.basename(file_path)
-        df = reader(file_name, file_loc=cik_folder)
-        if df is not None:
-            processed_dataframes.append(df)
-
-    # Merge processed data with volatility data
-    combined = None
-    if processed_dataframes:
-        combined = pd.concat(processed_dataframes)
-        vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
-        combined = pd.merge(combined, vol_data, how="inner", on="Date")
-        combined["_cik"] = cik
-        combined.reset_index(inplace=True)
-        
-        # Reorder columns
-        columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-        new_column_order = columns_to_move + [col for col in combined.columns if col not in columns_to_move]
-        combined = combined[new_column_order]
-
-            # Filter rows with missing volatility data
-        combined = combined[combined["_ret"].notnull()]
-
-    return {
-        "cik": cik,
-        "metadata": metadata_records,        # For centralized DB updates
-        "processed_data": combined.to_dict("records") if combined is not None else []
-    }
-
-class FileMetadata(Base):
-    """
-    Stores robust metadata about each file:
-        - file_path: unique path or identifier (primary key)
-        - last_modified: last modification time
-        - file_hash: e.g., MD5 or other hash for detecting changes
-        - is_deleted: True if no longer valid on disk
-    """
-    __tablename__ = 'file_metadata'
-    
-    file_path = Column(String, primary_key=True)
-    last_modified = Column(DateTime, nullable=False)
-    file_hash = Column(String, nullable=False)
-    is_deleted = Column(Boolean, default=False)
-    cik = Column(String, nullable=False)
 
 class ConstructDTM:
     def __init__(self, spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date):
@@ -484,20 +50,16 @@ class ConstructDTM:
         # self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
         # --------------- Configure Database --------------- #
-        
         # Adjust connection string for your environment
-        # db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
-        # self.engine = create_engine(db_url, echo=False)
-        # self.SessionLocal = sessionmaker(bind=self.engine)
-        self.SessionLocal = SessionLocal
+        db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
+        self.engine = create_engine(db_url, echo=False)
+        self.SessionLocal = sessionmaker(bind=self.engine)
+        Base = declarative_base()
+        # self.SessionLocal = SessionLocal
         # Create table if not exists
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(self.engine)
         
-        # Explicitly set logging level again before database operations
-        logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.ERROR)
-        logging.getLogger('sqlalchemy.engine.base.Engine').setLevel(logging.ERROR)
-        logging.getLogger('sqlalchemy.engine.base').setLevel(logging.ERROR)
-        
+
         
     # ------------------- Helper Methods ------------------- #    
     @staticmethod
@@ -547,16 +109,11 @@ class ConstructDTM:
                 for f in os.listdir(directory_path)
                 if os.path.isfile(os.path.join(directory_path, f)) and not f.endswith(".DS_Store")
             ]
-            print("all_files", all_files)
 
             # Fetch metadata from PostgreSQL
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
             db_file_map = {record.file_path: record for record in db_files}
-            print('db_file_map', db_file_map)
             
-            all_files_in_db = session.query(FileMetadata).all()
-            print("All files in DB:", [record.file_path for record in all_files_in_db])
-            print("All files_deleted in DB:", [record.is_deleted for record in all_files_in_db])
             
             # Detect new and updated files
             for file_path in all_files:
@@ -570,7 +127,6 @@ class ConstructDTM:
                 
                 else:
                 # if file_path not in db_file_map:
-                    print('hihi@@@@@@@@@@@@', file_path)
                     # New file
                     new_record = FileMetadata(
                         file_path=file_path,
@@ -583,7 +139,6 @@ class ConstructDTM:
                     newly_added_or_changed.append(file_path)
                     # Query immediately after committing
                     db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
-                    print("Fetched files:", [f.file_path for f in db_files])
                     
                 # elif (db_file_map[file_path].file_hash != file_hash or
                 #     db_file_map[file_path].last_modified != last_modified):
@@ -596,7 +151,6 @@ class ConstructDTM:
             # Mark deleted files
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             db_file_map = {record.file_path: record for record in db_files}
-            print('db_file_map', db_file_map)
             existing_files = set(all_files)
             for file_path, record in db_file_map.items():
                 if file_path not in existing_files:
@@ -614,23 +168,23 @@ class ConstructDTM:
         return newly_added_or_changed
 
     
-    # ------------------- csv_builder (Main Entry) ------------------- #
-    def csv_builder(self):
+    # ------------------- file_aggregator (Main Entry) ------------------- #
+    def file_aggregator(self):
         """
-        Build CSV files for each CIK using Spark, detecting changes via DB metadata.
-        Only process & write out CSV for newly added or changed files.
+        Build parquet files for each parquet using Spark, detecting changes via DB metadata.
+        Only process & write out parquet for newly added or changed files.
         """
     
         for cik, symbol in self.firms_dict.items():
             cik_path = os.path.join(self.data_folder, cik)
             print('----------------------------------------------------------------')
-            print(f"[csv_builder] Processing CIK: {cik}")
+            print(f"[file_aggregator] Processing parquet: {cik}")
             # 1) Scan the directory for new or changed files
             changed_files = self._scan_directory_and_update_db(cik_path, cik)
             print('changed files', changed_files)
 
             if not changed_files:
-                print(f"[csv_builder] No new or changed files for CIK: {cik}")
+                print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
 
             # 2) Convert changed files to a Spark DataFrame
@@ -648,14 +202,14 @@ class ConstructDTM:
             new_df = new_df.select(["Name", "CIK", "Date", "Body"])
             new_df = new_df.orderBy(col("Date"))  # Sort if needed
 
-            # 4) Write the new files to CSV
+            # 4) Write the new files to parquet
             output_path = os.path.join(self.output_folder, cik)
             # We can append with coalesce(1) => single file per new batch, or multiple part files.
             new_df.coalesce(1).write.parquet(output_path, mode="append")
 
-            print(f"[csv_builder] Wrote/updated CSV for {len(changed_files)} file(s) under CIK: {cik}")
+            print(f"[file_aggregator] Wrote/updated parquet for {len(changed_files)} file(s) under CIK: {cik}")
 
-        print(f"[csv_builder] CSV files saved/updated in: {self.output_folder}")
+        print(f"[file_aggregator] parquet files saved/updated in: {self.output_folder}")
 
 
     def aggregate_data(self, files_path, firms_ciks):
@@ -721,19 +275,15 @@ class ConstructDTM:
         # 1) Distribute tasks to workers
         rdd = self.spark.sparkContext.parallelize(self.firms_ciks)
         db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
-        def process_cik_wrapper(cik):
-            return run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_url)
-
-        results = rdd.map(process_cik_wrapper).collect()
-
-        # results = rdd.map(lambda cik: run_process_for_cik(
-        #     cik,
-        #     save_folder,
-        #     folder_path,
-        #     start_date,
-        #     end_date,
-        #     db_url
-        # )).collect()
+        
+        results = rdd.map(lambda cik: run_process_for_cik(
+            cik,
+            save_folder,
+            folder_path,
+            start_date,
+            end_date,
+            db_url
+        )).collect()
 
          # Driver side: gather output file paths
         all_parquet_files = []
@@ -906,6 +456,47 @@ class ConstructDTM:
         combined_df.write.parquet(file_path, mode='overwrite')
         print(f"Combined DataFrame saved to {file_path}")
 
+# Example Usage
+if __name__ == "__main__":
+    # Initialize Spark session
+    spark = (SparkSession.builder
+        .appName("DataPipeline")
+        .master("local[*]")
+        # Memory allocations
+        .config("spark.driver.memory", "8g")
+        .config("spark.executor.memory", "8g")
+        # Optional: increase network timeout
+        # .config("spark.network.timeout", "300s")
+        # Optional: help with semaphore leaks
+        # .config("spark.python.worker.reuse", "false")
+        .getOrCreate()
+    )
+
+    # Define input parameters
+    # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt"
+    data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/test.filings"
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500"
+    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
+    
+    firms_df = pd.read_csv(firms_csv_file_path)
+    firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
+    firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
+    firms_dict = {value: key for key, value in firms_dict.items()}
+    
+    firms_ciks = list(firms_dict.keys())
+    columns = ["Name", "CIK", "Date", "Body"]
+    start_date = '2006-01-01'
+    end_date = '2023-12-31'
+
+    # Create pipeline and execute tasks
+    pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
+    pipeline.file_aggregator()
+    # pipeline.process_filings_for_cik_spark2(save_folder, start_date, end_date)
+    pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
+    # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
+    # pipeline.aggregate_data(save_folder, firms_ciks) # Execute this after processing all CIKs
+
+
 
     # def concatenate_dataframes2(self, level, section, save_path, start_date, end_date):
     #     from hons_project.vol_reader_fun import vol_reader2
@@ -982,45 +573,6 @@ class ConstructDTM:
 
 
 
-# Example Usage
-if __name__ == "__main__":
-    # Initialize Spark session
-    spark = (SparkSession.builder
-        .appName("DataPipeline")
-        .master("local[*]")
-        # Memory allocations
-        .config("spark.driver.memory", "8g")
-        .config("spark.executor.memory", "8g")
-        # Optional: increase network timeout
-        # .config("spark.network.timeout", "300s")
-        # Optional: help with semaphore leaks
-        # .config("spark.python.worker.reuse", "false")
-        .getOrCreate()
-    )
-
-    # Define input parameters
-    # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt"
-    data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/test.filings"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500"
-    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
-    
-    firms_df = pd.read_csv(firms_csv_file_path)
-    firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
-    firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
-    firms_dict = {value: key for key, value in firms_dict.items()}
-    
-    firms_ciks = list(firms_dict.keys())
-    columns = ["Name", "CIK", "Date", "Body"]
-    start_date = '2006-01-01'
-    end_date = '2023-12-31'
-
-    # Create pipeline and execute tasks
-    pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    pipeline.csv_builder()
-    # pipeline.process_filings_for_cik_spark2(save_folder, start_date, end_date)
-    # pipeline.process_filings_for_cik_spark(spark, save_folder, firms_ciks, start_date, end_date)
-    # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
-    # pipeline.aggregate_data(save_folder, firms_ciks) # Execute this after processing all CIKs
 
 
 
