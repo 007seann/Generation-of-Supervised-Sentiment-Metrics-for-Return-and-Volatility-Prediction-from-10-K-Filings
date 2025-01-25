@@ -116,7 +116,7 @@ def reader(file_name, file_loc):
     for doc in tqdm(range(N)):
         terms = clean(df['Body'][doc])
         term_counts = Counter(terms)
-        row = {term: term_counts[term] for term in term_counts if term in vocab_list}
+        row = {term: float(term_counts[term]) for term in term_counts if term in vocab_list}
         data.append(row)
         index.append(df['Date'][doc])
 

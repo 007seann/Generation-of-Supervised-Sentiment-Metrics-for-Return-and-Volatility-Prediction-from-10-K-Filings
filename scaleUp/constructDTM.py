@@ -1,5 +1,5 @@
 
-from pipeline import _cleanup_multiprocessing_resources, run_process_for_cik, worker_process_cik, worker_process_cik2
+from pipeline import _cleanup_multiprocessing_resources, run_process_for_cik
 from metadata import FileMetadata
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
@@ -18,8 +18,9 @@ import logging
 import atexit
 import multiprocessing
 import pandas as pd
-
-
+import pyarrow.parquet as pq
+import pyarrow as pa
+import pyarrow.compute as pc
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Register the cleanup function to run at interpreter shutdown
@@ -286,174 +287,140 @@ class ConstructDTM:
         )).collect()
 
          # Driver side: gather output file paths
-        all_parquet_files = []
+        updated_files_paths = []
         for result in results:
             output_file = result["output_file"]
             if output_file:
-                all_parquet_files.append(output_file)
+                updated_files_paths.append(output_file)
 
-        return all_parquet_files
-
+        return updated_files_paths
     
-    def process_filings_for_cik_spark2(self, save_folder, start_date, end_date):
-        """
-        Distribute tasks to Spark workers, then centrally update DB and write CSVs.
-        """
-        # Enable case sensitivity in Spark
-        self.spark.conf.set("spark.sql.caseSensitive", "true")
-        
-        folder = 'company_df'
-        folder_path = os.path.join(save_folder, folder)
-        os.makedirs(folder_path, exist_ok=True)
+    @staticmethod
+    def combine_parquet_in_batches(file_paths, batch_size=50):
+        # Process files in batches
+        tables = []
 
-        # 1) Distribute tasks
-        rdd = self.spark.sparkContext.parallelize(self.firms_ciks)
-        # Map each CIK to the top-level worker function
-        results = rdd.map(lambda cik: worker_process_cik2(
-            cik,
-            folder_path,
-            start_date,
-            end_date
-        )).collect()
+        # Redirect standard output to suppress pyarrow.Table output
+        original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
 
-        # 2) Centralized Post-Processing: Update DB & Write CSVs
-        session = self.SessionLocal()
         try:
-            for result in results:
-                cik = result["cik"]
-                metadata = result["metadata"]
-                records = result["processed_data"]  # list of dicts
+            for i, file_path in enumerate(file_paths):
+                table = pq.read_table(file_path)
+                tables.append(table)
 
-                # (A) Update DB with new/updated metadata
-                for m in metadata:
-                    db_record = session.query(FileMetadata).filter_by(file_path=m["file_path"]).first()
-                    if db_record:
-                        # Update existing
-                        db_record.file_hash = m["file_hash"]
-                        db_record.last_modified = m["last_modified"]
-                        db_record.is_deleted = False
-                    else:
-                        # Insert new
-                        new_record = FileMetadata(
-                            file_path=m["file_path"],
-                            last_modified=m["last_modified"],
-                            file_hash=m["file_hash"],
-                            is_deleted=False,
-                            cik = cik
-                        )
-                        session.add(new_record)
-
-                # (B) Write/merge processed data into dtm_{cik}.csv
-                folder_name = 'processed'
-                folder_path = os.path.join(save_folder, folder_name)
-                if not os.path.exists(folder_path):
-                    os.makedirs(folder_path)
-                output_path = os.path.join(save_folder, folder_name, f"dtm_{cik}.csv")
-
-                if records:
-                    # Normalize `Date` dynamically
-                    normalized_records = [
-                        {**record, "Date": record["Date"].strftime("%Y-%m-%d")} 
-                        if hasattr(record["Date"], "strftime") else record
-                        for record in records
-                    ]
-                    # Convert normalized records to Spark DataFrame
-                    new_df = self.spark.createDataFrame(normalized_records)
-                    # Ensure consistent schema before union
-                    if os.path.exists(output_path):
-                        existing_df = self.spark.read.csv(output_path, header=True, inferSchema=True)
-                        
-                        # Align schemas of existing_df and new_df
-                        existing_df, new_df = self.align_schemas(existing_df, new_df)
-
-                        # Merge DataFrames with consistent schema
-                        combined_df = existing_df.union(new_df).dropDuplicates(["Date", "_cik", "_vol", "_ret"])
-                    else:
-                        combined_df = new_df
-
-                    # Reorganize columns
-                    columns_to_move = ['Date', '_cik', '_ret', '_ret+1', '_vol', '_vol+1']
-                    remaining_columns = [col for col in combined_df.columns if col not in columns_to_move]
-                    combined_df = combined_df.select(columns_to_move + remaining_columns)
-
-                    # Write to CSV
-                    combined_df.coalesce(1).write.csv(output_path, header=True, mode="overwrite")
-                    logging.info(f"[process_filings_for_cik_spark] Updated dtm_{cik}.csv with {len(records)} records.")
-
-            # Commit DB changes
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            logging.error(f"Error in centralized DB update: {e}")
+                # When the batch is full, write to disk
+                if (i + 1) % batch_size == 0 or (i + 1) == len(file_paths):
+                    combined_table = pa.concat_tables(tables, promote_options='default')
+                    # Convert to Pandas DataFrame
+                    df = combined_table.to_pandas()
+                    columns_to_drop = ['form','table','content','heading']
+                    df = df.drop(columns=columns_to_drop)
+                    # Perform operations using Pandas
+                    df = df.drop_duplicates(subset=["Date", "_cik", "_vol", "_ret"]).fillna(0.0)
+                    
+                    # Convert back to pyarrow.Table
+                    combined_table = pa.Table.from_pandas(df)
+                    tables = []  # Clear the batch
         finally:
-            session.close()
-    def concatenate_dataframes(self, file_paths, level, section, save_path, start_date, end_date):
+            # Restore standard output
+            sys.stdout.close()
+            sys.stdout = original_stdout
+
+        return combined_table
+
+   
+    def concatenate_dataframes(self, updated_paths, level, section, save_path, start_date, end_date):
         from hons_project.vol_reader_fun import vol_reader2
         from pyspark.sql.window import Window
         import pyspark.sql.functions as F
         """
         Concatenate all processed DataFrames into a single DataFrame using PySpark functions.
         """
-        # Read all Parquet files into a single DataFrame
-        dataframes = self.spark.read.parquet(*file_paths)
-
-        if not dataframes:
-            print("No dataframes to concatenate.")
-            return
-
-        # Remove duplicates and clean up columns
-        dataframes = (
-            dataframes
-            .dropDuplicates(["Date", "_cik", "_vol", "_ret"])
-            .fillna(0.0)
-            .withColumnRenamed('Date0', 'Date')
-            .orderBy("Date")
-        )
+        print('update_dataframes', updated_paths)
+        # 1) Read in all Parquet files
+        existing_files_path = os.path.join(save_path, 'processed')
+        existing_files = os.listdir(existing_files_path)
+        existing_files = [f for f in existing_files if f != '.DS_Store']
+        existing_files = [os.path.join(existing_files_path, f) for f in existing_files]
+        print('existing_file2222s', existing_files)
+        
+        # Combine Parquet files in batches
+        combined_table = self.combine_parquet_in_batches(existing_files)
+        
+        # Convert the cleaned DataFrame back to a PySpark DataFrame
+        combined_df = combined_table.to_pandas()
 
         if not os.path.exists(save_path):
             os.makedirs(save_path)
+            
 
-        # Align with 3-day return/volatility
-        # Generate n_ret (returns) and n_vol (volatility) using vol_reader2
-        x1, x2 = vol_reader2(self.firms_ciks, start_date, end_date, window=3, extra_end=True, extra_start=True)
+        # Generate 3-day rolling returns and volatilities for the provided firms' CIKs
+        x1, x2 = vol_reader2(firms_ciks, start_date, end_date, window=3, extra_end=True, extra_start=True)
 
-        # Convert x1 and x2 to PySpark DataFrames
-        n_ret_df = self.spark.createDataFrame(x1.reset_index()).withColumnRenamed("index", "Date")
-        n_vol_df = self.spark.createDataFrame(x2.reset_index()).withColumnRenamed("index", "Date")
+        # Shift the data by one time step to align with the desired time window
+        x1 = x1.shift(1)
+        x2 = x2.shift(1)
 
-        # Merge n_ret and n_vol into a single DataFrame
-        vol_ret_df = (
-            n_ret_df
-            .join(n_vol_df, on="Date", how="inner")
-            .withColumnRenamed("0", "n_ret")
-            .withColumnRenamed("1", "n_vol")
-        )
+        # Slice the data to only include values within the start_date and end_date range
+        x1 = x1[start_date:end_date]
+        x2 = x2[start_date:end_date]
 
-        # Process each CIK and join the return/volatility with the main DataFrame
-        for cik in self.firms_ciks:
-            print(f'Processing {cik}')
-            cik_int = int(cik.lstrip('0'))
+        # Initialize a flag to indicate the first iteration for appending data
+        first = True
 
-            # Filter for the current CIK
-            y = dataframes.filter(dataframes['_cik'] == cik_int)
-
-            # Join n_ret and n_vol with y based on the 'Date' column
-            y = (
-                y
-                .join(vol_ret_df, on="Date", how="left")
-                .orderBy("Date")
-            )
-
-            # If it's the first CIK, initialize combined_df
-            if 'combined_df' not in locals():
-                combined_df = y
+        # Loop through each firm CIK to align and merge 3-day rolling return/volatility with the main DataFrame
+        for cik in firms_ciks:
+            print(f'Aligning with 3-day return/volatility {cik}')
+            
+            # Extract the 3-day rolling return and volatility data for the current CIK
+            x1c = x1[cik]
+            x2c = x2[cik]
+            
+            # Concatenate the return and volatility data into a single DataFrame
+            x = pd.concat([x1c, x2c], axis=1)
+            x.columns = ['n_ret', 'n_vol']  # Rename columns for clarity
+            
+            # Filter rows in the combined DataFrame corresponding to the current CIK
+            y = combined_df[combined_df['_cik'] == cik]
+            
+            # Set 'Date' as the index for both the main DataFrame and the return/volatility DataFrame
+            y.set_index('Date', inplace=True)
+            x.index = pd.to_datetime(x.index)
+            y.index = pd.to_datetime(y.index)
+            
+            # Join the return/volatility data (`x`) with the filtered DataFrame (`y`) on the 'Date' index
+            z = y.join(x)
+            
+            # Extract only the return and volatility columns from the joined data
+            zz = z[['n_ret', 'n_vol']]
+            
+            # On the first iteration, initialize the combined DataFrame; otherwise, append to it
+            if first:
+                df_add = zz
+                first = False
             else:
-                combined_df = combined_df.unionByName(y, allowMissingColumns=True)
+                df_add = pd.concat([df_add, zz], axis=0)
 
-        # Write the combined DataFrame to Parquet
+        # Reset the index of the combined DataFrame to include 'Date' as a regular column
+        df_add.reset_index(inplace=True)
+
+        # Ensure that the index of the combined DataFrame matches the original `combined_df`
+        assert all(combined_df.index == df_add.index), 'Do not merge!'
+
+        # Make a copy of the original `combined_df` to prevent modifications to the original
+        combined_df = combined_df.copy()
+
+        # Add new columns for the 3-day rolling return and volatility to the combined DataFrame
+        combined_df['_ret'] = df_add['n_ret']
+        combined_df['_vol'] = df_add['n_vol']
+
+
         filename = f'dtm_{level}_{section}'
         file_path = os.path.join(save_path, f"{filename}.parquet")
-        combined_df.write.parquet(file_path, mode='overwrite')
+        dataframes = self.spark.createDataFrame(combined_df)
+        dataframes.coalesce(1).write.parquet(file_path, mode='overwrite')
+
         print(f"Combined DataFrame saved to {file_path}")
 
 # Example Usage
@@ -465,15 +432,10 @@ if __name__ == "__main__":
         # Memory allocations
         .config("spark.driver.memory", "8g")
         .config("spark.executor.memory", "8g")
-        # Optional: increase network timeout
-        # .config("spark.network.timeout", "300s")
-        # Optional: help with semaphore leaks
-        # .config("spark.python.worker.reuse", "false")
         .getOrCreate()
     )
 
     # Define input parameters
-    # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt"
     data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/test.filings"
     save_folder = "/Users/apple/PROJECT/hons_project/data/SP500"
     firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
@@ -491,307 +453,7 @@ if __name__ == "__main__":
     # Create pipeline and execute tasks
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
     pipeline.file_aggregator()
-    # pipeline.process_filings_for_cik_spark2(save_folder, start_date, end_date)
-    pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
-    # pipeline.concatenate_dataframes(level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
-    # pipeline.aggregate_data(save_folder, firms_ciks) # Execute this after processing all CIKs
+    updated_paths = pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
+    pipeline.concatenate_dataframes(updated_paths=updated_paths,level="test", section="all", save_path=save_folder, start_date=start_date, end_date=end_date)
 
 
-
-    # def concatenate_dataframes2(self, level, section, save_path, start_date, end_date):
-    #     from hons_project.vol_reader_fun import vol_reader2
-    #     """
-    #     Concatenate all processed DataFrames into a single DataFrame.
-    #     """
-    #     dataframes = []
-    #     files_path = os.path.join(save_path, 'processed')
-    #     for cik in self.firms_ciks:
-    #         file_path = os.path.join(files_path, f'dtm_{cik}.csv')
-    #         if os.path.exists(file_path):
-    #             df = self.spark.read.csv(file_path, header=True, inferSchema=True)
-    #             dataframes.append(df)
-    #         else:
-    #             print(f"File does not exist for CIK: {cik}, skipping...")
-
-    #     if dataframes:
-    #         # Combine all DataFrames
-    #         combined_df = dataframes[0]
-    #         for df in dataframes[1:]:
-    #             combined_df = combined_df.unionByName(df, allowMissingColumns=True)
-
-    #         combined_df = combined_df.fillna(0.0)
-    #         combined_df = combined_df.withColumnRenamed('Date0', 'Date')
-    #         combined_df = combined_df.orderBy("Date")
-
-    #         if not os.path.exists(save_path):
-    #             os.makedirs(save_path)
-
-    #         # Align with 3-day return/volatility
-    #         x1, x2 = vol_reader2(self.firms_ciks, start_date, end_date, window=3, extra_end=True, extra_start=True)
-    #         x1 = x1.shift(1)
-    #         x2 = x2.shift(1)
-    #         x1 = x1[start_date:end_date]
-    #         x2 = x2[start_date:end_date]
-
-
-    #         first = True
-    #         for cik in self.firms_ciks:
-    #             print(f'Processing {cik}')
-    #             x1c = x1[cik]
-    #             x2c = x2[cik]
-    #             x = pd.concat([x1c, x2c], axis=1)
-    #             x.columns = ['n_ret', 'n_vol']
-    #             y = combined_df.filter(combined_df['_cik'] == int(cik.lstrip('0')))
-
-    #             y = y.withColumn('Date', y['Date'].cast('timestamp'))
-    #             x.index = pd.to_datetime(x.index)
-    #             y = y.toPandas()
-    #             y.set_index('Date', inplace=True)
-    #             z = y.join(x)
-    #             zz = z[['n_ret', 'n_vol']]
-
-    #             if first:
-    #                 df_add = zz
-    #                 first = False
-    #             else:
-    #                 df_add = pd.concat([df_add, zz], axis=0)
-
-    #         df_add.reset_index(inplace=True)
-    #         assert all(combined_df.toPandas().index == df_add.index), 'Do not merge!'
-
-    #         combined_df = combined_df.toPandas()
-    #         combined_df['_ret'] = df_add['n_ret']
-    #         combined_df['_vol'] = df_add['n_vol']
-
-
-    #         filename = f'dtm_{level}_{section}'
-    #         file_path = os.path.join(save_path, f"{filename}.csv")
-    #         combined_df.to_csv(file_path, index=False)
-    #     else:
-    #         print("No dataframes to concatenate.")
-
-
-
-
-
-
-
-  
-    # def process_filings_for_cik_spark(self, files_path, firms_ciks):
-    #     """
-    #     Incrementally update dtm_{cik}.csv using PostgreSQL metadata tracking.
-    #     Handles new, updated, and deleted files. Ensures serialization safety.
-    #     """
-    #     folder = 'company_df'
-    #     folder_path = os.path.join(files_path, folder)
-    #     if not os.path.exists(folder_path):
-    #         os.makedirs(folder_path, exist_ok=True)
-
-    #     # Serialize-safe helper functions
-    #     @staticmethod
-    #     def compute_file_hash(file_path, chunk_size=65536):
-    #         import hashlib
-    #         md5 = hashlib.md5()
-    #         with open(file_path, 'rb') as f:
-    #             while True:
-    #                 data = f.read(chunk_size)
-    #                 if not data:
-    #                     break
-    #                 md5.update(data)
-    #         return md5.hexdigest()
-
-    #     @staticmethod
-    #     def get_file_modified_time(file_path):
-    #         import os
-    #         import datetime
-    #         epoch_time = os.path.getmtime(file_path)
-    #         return datetime.datetime.fromtimestamp(epoch_time)
-
-    #     def collect_metadata(cik, folder_path):
-    #         """
-    #         Worker-safe function to collect metadata for files in the CIK folder.
-    #         Returns a list of metadata dictionaries and paths of processed files.
-    #         """
-    #         import os
-    #         from hons_project.annual_report_reader import reader
-
-    #         cik_folder = os.path.join(folder_path, cik)
-    #         metadata = []
-    #         processed_data = []
-
-    #         if not os.path.exists(cik_folder):
-    #             return metadata, processed_data
-
-    #         try:
-    #             # List all files in the folder
-    #             all_files = [
-    #                 os.path.join(cik_folder, file_name)
-    #                 for file_name in os.listdir(cik_folder)
-    #                 if file_name.endswith('.csv')
-    #             ]
-
-    #             # Process each file and collect metadata
-    #             for file_path in all_files:
-    #                 file_hash = compute_file_hash(file_path)
-    #                 last_modified = get_file_modified_time(file_path)
-    #                 file_name = os.path.basename(file_path)
-
-    #                 # Read and process the file (safe logic here)
-    #                 processed_file = reader(file_name, file_loc=cik_folder)
-    #                 if processed_file is not None:
-    #                     processed_data.append(processed_file)
-
-    #                 # Collect metadata
-    #                 metadata.append({
-    #                     "file_path": file_path,
-    #                     "file_hash": file_hash,
-    #                     "last_modified": last_modified,
-    #                 })
-
-    #         except Exception as e:
-    #             print(f"Error processing CIK {cik}: {e}")
-
-    #         return metadata, processed_data
-
-    #     def process_single_cik(cik):
-    #         """
-    #         Worker-safe function to process a single CIK and return metadata + processed data.
-    #         """
-    #         import pandas as pd
-    #         from hons_project.vol_reader_fun import vol_reader
-
-    #         cik_metadata, cik_processed_data = collect_metadata(cik, folder_path)
-
-    #         if cik_processed_data:
-    #             combined_data = pd.concat(cik_processed_data)
-    #             vol_data = vol_reader(cik, start_date=self.start_date, end_date=self.end_date)
-    #             combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
-    #             combined_data["_cik"] = cik
-    #             combined_data = combined_data.reset_index()
-
-    #             # Output combined data as a dictionary for centralized updates
-    #             return {
-    #                 "metadata": cik_metadata,
-    #                 "processed_data": combined_data,
-    #                 "cik": cik
-    #             }
-    #         return {
-    #             "metadata": cik_metadata,
-    #             "processed_data": None,
-    #             "cik": cik
-    #         }
-
-    #     # Parallel processing of CIKs
-    #     cik_rdd = self.spark.sparkContext.parallelize(firms_ciks)
-    #     cik_results = cik_rdd.map(process_single_cik).collect()
-
-    #     # Centralized post-processing
-    #     session = self.SessionLocal()
-    #     try:
-    #         for result in cik_results:
-    #             metadata = result["metadata"]
-    #             processed_data = result["processed_data"]
-    #             cik = result["cik"]
-    #             output_path = os.path.join(files_path, f"processed/dtm_{cik}.csv")
-
-    #             # Update metadata in the database
-    #             for record in metadata:
-    #                 db_record = session.query(FileMetadata).filter_by(file_path=record["file_path"]).first()
-    #                 if db_record:
-    #                     db_record.file_hash = record["file_hash"]
-    #                     db_record.last_modified = record["last_modified"]
-    #                 else:
-    #                     new_record = FileMetadata(
-    #                         file_path=record["file_path"],
-    #                         last_modified=record["last_modified"],
-    #                         file_hash=record["file_hash"],
-    #                         is_deleted=False
-    #                     )
-    #                     session.add(new_record)
-    #             session.commit()
-
-    #             # Save processed data
-    #             if processed_data is not None:
-    #                 # Write the combined data to a CSV file
-    #                 processed_df = self.spark.createDataFrame(processed_data)
-    #                 if os.path.exists(output_path):
-    #                     existing_df = self.spark.read.csv(output_path, header=True, inferSchema=True)
-    #                     combined_df = existing_df.union(processed_df).dropDuplicates(["Date", "_cik", "_vol", "_ret"])
-    #                 else:
-    #                     combined_df = processed_df
-    #                 combined_df.coalesce(1).write.csv(output_path, header=True, mode="overwrite")
-    #                 print(f"[process_filings_for_cik_spark] Updated dtm_{cik}.csv with new/updated records.")
-    #             else:
-    #                 print(f"[process_filings_for_cik_spark] No new or updated records for CIK {cik}.")
-    #     except Exception as e:
-    #         session.rollback()
-    #         print(f"Error updating database metadata: {e}")
-    #     finally:
-    #         session.close()
-
-        
-            # # Check if the output file already exists
-            # # Not for real-time update 
-            # # Need to be changed to update the dtm_{cik}.csv file
-            # # Refer to def append_to_dtm code in the Notion
-            # if os.path.exists(output_path):
-            #     print(f"CSV file already exists for CIK: {cik}, skipping...")
-            #     return None
-
-            # cik_folder = os.path.join(folder_path, cik)
-            # if not os.path.exists(cik_folder):
-            #     print(f"No folder found for CIK: {cik}")
-            #     return None
-
-            # # Combine all processed files for the CIK into a single DataFrame
-            # processed_data = []
-            # for file_name in os.listdir(cik_folder):
-            #     if not file_name.endswith('.csv'):
-            #         continue
-            #     # Apply the reader function
-            #     processed_file = reader(file_name, file_loc=cik_folder)
-            #     # processed_file.index = processed_file.index.tz_localize("UTC")
-
-            #     if processed_file is not None:
-            #         processed_data.append(processed_file)
-            # if not processed_data:
-            #     print(f"No valid files processed for CIK: {cik}")
-            #     return None
-
-            # # Combine all processed files into a DataFrames
-            # combined_data = pd.concat(processed_data)
-            # # Convert the processed data to a Spark DataFrame
-            # # Read and join with volatility data
-
-            # vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
-
-            # # Merge the data
-            # combined_data = pd.merge(combined_data, vol_data, how="inner", on="Date")
-
-            # # Add the '_cik' column
-            # combined_data["_cik"] = cik
-
-            # # Convert the index to a column
-            # combined_data = combined_data.reset_index()
-
-            # # Reorder columns
-            # columns_to_move = ['Date', '_cik', '_vol', '_ret', '_vol+1', '_ret+1']
-            # new_column_order = columns_to_move + [col for col in combined_data.columns if col not in columns_to_move]
-            # combined = combined_data[new_column_order]
-
-            # # Filter rows with missing volatility data
-            # combined_data = combined_data[combined_data["_ret"].notnull()]
-
-            # # Save the processed DataFrame to a file
-            # save_folder = os.path.join(files_path, "processed")
-            # if not os.path.exists(save_folder):
-            #     os.makedirs(save_folder)
-            
-            # combined.to_csv(output_path, index=False)
-            
-            # print(f"Processed CIK {cik} and saved to {output_path}")
-
-            
-        # # Parallel processing of all CIKs
-        # cik_rdd = spark.sparkContext.parallelize(firms_ciks)
-        # cik_rdd.foreach(lambda cik: process_single_cik(cik))
