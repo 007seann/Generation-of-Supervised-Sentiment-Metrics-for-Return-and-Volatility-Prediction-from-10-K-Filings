@@ -7,16 +7,22 @@ import atexit
 import asyncio
 import aiohttp
 
+# Load API key and Host name
+with open('/Users/apple/PROJECT/api/rapidapi_key.txt', 'r') as file:
+    api_key = file.read().strip()
+    
+with open('/Users/apple/PROJECT/api/rapidapi_host.txt', 'r') as file:
+    api_host = file.read().strip()
 
 # Global variables
 total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
-save_folder = "NASDAQ100_analysis_report_ids"
-year_until = 2024
-year_since = 2006
-pages = [i for i in range(1, 1)] # Assume the total number of annual reports per firm is less than 40
+save_folder = "non_overlap_nasdaq_analysis_report_ids"
+year_until = 2025 # Getting the data points untill y.12.31
+year_since = 2000 # Getting the data points since x.01.01
+pages = [i for i in range(1, 3)] # Assume the total number of annual reports per firm is less than 80
 
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
@@ -26,7 +32,7 @@ CONCURRENCY_LIMIT = 60 # Limit to 60 concurrent tasks
 BATCH_SIZE = 30  # Process 30 tickers at a time
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv'
+path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
 
 # Read and process CSV
 try:
@@ -43,10 +49,9 @@ except UnicodeDecodeError:
 
 # Convert years to Unix time
 year2unixTime = {}
-for year in range(year_until + 1, year_since - 1, -1):
+for year in range(year_until + 1, year_since - 1, -1): # 2026, 2025, 2024
     current_year_timestamp = int(datetime.datetime(year, 1, 1).timestamp())
     year2unixTime[year] = current_year_timestamp
-
 
 # Fetch data for a specific ticker
 async def fetch_data_for_ticker(ticker, session, rate_limiter):
@@ -56,7 +61,7 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
     if not os.path.exists(ticker_save_folder):
         os.makedirs(ticker_save_folder)
 
-    for year in range(year_until + 1, year_since, -1):
+    for year in range(year_until + 1, year_since, -1): # 2026, 2025
         year_file_path = os.path.join(ticker_save_folder, f"{year-1}.json")
         if os.path.exists(year_file_path):
             with open(year_file_path, 'r') as json_file:
@@ -66,22 +71,23 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
         
         merged_data = {"data": []}
         for page in pages:
+
             url = "https://seeking-alpha.p.rapidapi.com/analysis/v2/list"
             querystring = {
                 "id": ticker,
-                "until": year2unixTime[year],
-                "since": year2unixTime[year - 1],
+                "until": year2unixTime[year], # until x.01.01
+                "since": year2unixTime[year - 1], # since y.01.01
                 "size": "40",
                 "number": page
             }
             headers = {
-                "x-rapidapi-key": "13f98f0478msha8ec97b6a805b1fp174175jsn98c8458d4397",
-                "x-rapidapi-host": "seeking-alpha.p.rapidapi.com"
+                "x-rapidapi-key": f"{api_key}",
+                "x-rapidapi-host": f"{api_host}"
             }
             
             retries = 0
             backoff = INITIAL_BACKOFF
-            
+
             while retries < MAX_RETRIES:
                 try:
                     async with rate_limiter:
@@ -163,7 +169,7 @@ async def main():
         # Process in batches
         for i in range(0, len(tickers), BATCH_SIZE):
             batch = tickers[i:i + BATCH_SIZE]
-            print(f"Processing batch {i // BATCH_SIZE + 1}: {batch}")
+            # print(f"Processing batch {i // BATCH_SIZE + 1}: {batch}")
             tasks = [fetch_data_for_ticker(ticker, session, rate_limiter) for ticker in batch]
             await asyncio.gather(*tasks)
             

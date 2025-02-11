@@ -8,8 +8,8 @@ import pandas as pd
 # Global variables
 id_folder = "analysis_report_ids"
 save_folder = "analysis_reports_count"
-year_since = 2006
-year_until = 2024
+year_since = 2006 # Getting the data points since x.01.01
+year_until = 2023 # Getting the data points untill 2023.12.31
 
 
 # Configuration
@@ -18,7 +18,7 @@ CONCURRENCY_LIMIT = 60
 BATCH_SIZE = 30 
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_10k/sp500_total_constituents.csv'
+path = '../Code_4_SECfilings/sp500_total_constituents.csv'
 
 # Read and process CSV
 try:
@@ -42,9 +42,9 @@ async def fetch_ids_for_ticekr(ticker: str, semaphore: asyncio.Semaphore):
         if not os.path.exists(ticker_id_folder):
             os.makedirs(ticker_id_folder)
             
-        for year in range(year_until, year_since, -1):
+        for year in range(year_until, year_since - 1, -1): #2023, ..., 2006
             id2title = defaultdict(lambda: 'title')
-            year_file_path = os.path.join(ticker_id_folder, f"{year-1}.json")
+            year_file_path = os.path.join(ticker_id_folder, f"{year}.json") # 2023.json, ..., 2006.json
             if not os.path.exists(year_file_path):
                 continue
             with open(year_file_path, 'r') as json_file:
@@ -54,7 +54,7 @@ async def fetch_ids_for_ticekr(ticker: str, semaphore: asyncio.Semaphore):
                         id = json_data['data'][i]['id']
                         title = json_data['data'][i]['attributes']['title']
                         id2title[id] = title
-            year_id2title[year] = id2title
+            year_id2title[year] = id2title # 2023: 2023's data, ..., 2006: 2006's data
             year_ids_counts = len(id2title)
             total_numIds += year_ids_counts
             # save annual counts
