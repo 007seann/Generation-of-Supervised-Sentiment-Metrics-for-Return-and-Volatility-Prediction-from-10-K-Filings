@@ -77,7 +77,7 @@ def reader(file_name, file_loc):
     vocab = set([w for w in vocab if re.match(r'[^\W\d]*$', w)])
     # print(f'- Vocab size: {len(vocab)}')
     
-    # Rmove stopwords
+    # Remove stopwords
     # print('Removing stopwords')
     stop_words = set(stopwords.words('english'))
     vocab -= stop_words

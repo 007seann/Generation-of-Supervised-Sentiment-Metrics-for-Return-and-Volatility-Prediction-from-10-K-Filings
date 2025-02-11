@@ -22,6 +22,8 @@ import pyarrow.parquet as pq
 import pyarrow as pa
 import pyarrow.compute as pc
 import re
+import json
+import time
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Register the cleanup function to run at interpreter shutdown
@@ -88,25 +90,75 @@ class ConstructDTM:
         epoch_time = os.path.getmtime(file_path)
         return datetime.datetime.fromtimestamp(epoch_time)
 
-    def _scan_directory_and_update_db(self, directory_path, cik):
+    @staticmethod
+    def in_memory_directory(path):
+        directory_path = []
+        year_list = os.listdir(path)
+        for y in year_list:
+            if y.endswith('.DS_Store'):
+                continue
+            year_path = os.path.join(path, y)
+            file_list = os.listdir(year_path)
+            for f in file_list:
+                if f.endswith('.DS_Store'):
+                    continue    
+                file_path = os.path.join(year_path, f)
+                directory_path.append(file_path)
+        
+        return directory_path
+    @staticmethod
+    def isJson(root_dir):
+        """
+        Walk through the directory. Return True if above 95% of the files are JSON files.
+        """
+        total_files = 0
+        json_files = 0
+        
+        for current_root, dirs, files in os.walk(root_dir):
+            for filename in files:
+                total_files += 1
+                if filename.lower().endswith('.json'):
+                    json_files += 1
+            
+            
+        json_percentage = (json_files / total_files) * 100
+        if json_percentage >= 95:
+            return True
+        else:
+            return False
+        
+        
+        
+    def _scan_directory_and_update_db(self, root_directory, cik, symbol):
         """
         **Step 1: Pre-fetch Data from the Database**
         Scan directory and update metadata in PostgreSQL to identify new or changed files.
         """
+        # if not os.path.exists(cik_path): ## Some distrinctive flag
+            # cik_path =self.in_memory_directory(symbol_path)
+        symbol = symbol.lower()
+        cik_path = os.path.join(root_directory, cik)
+        symbol_path = os.path.join(self.data_folder, symbol)
+        isJson_flag = False
+        
         session = self.SessionLocal()
         newly_added_or_changed = []
 
         try:
-            if not os.path.exists(directory_path):
-                return []
+            if self.isJson(root_directory):
+                isJson_flag = True
+                # Gather all files in the directory
+                all_files = self.in_memory_directory(symbol_path)
+            else:
+                # Gather all files in the directory
+                all_files = [
+                    os.path.join(cik_path, f)
+                    for f in os.listdir(cik_path)
+                    if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
+                ]
 
-            # Gather all files in the directory
-            all_files = [
-                os.path.join(directory_path, f)
-                for f in os.listdir(directory_path)
-                if os.path.isfile(os.path.join(directory_path, f)) and not f.endswith(".DS_Store")
-            ]
-
+                
+            
             # Fetch metadata from PostgreSQL
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
             db_file_map = {record.file_path: record for record in db_files}
@@ -158,11 +210,50 @@ class ConstructDTM:
 
         except Exception as e:
             session.rollback()
-            logging.error(f"Error scanning directory {directory_path}: {e}")
+            if isJson_flag:
+                logging.error(f"Error scanning directory {symbol_path}: {e}")
+            else:
+                logging.error(f"Error scanning directory {cik_path}: {e}")
         finally:
             session.close()
 
         return newly_added_or_changed
+    
+    def import_json(self, file_path):
+        """Reads and parses a JSON file."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    
+    def txt_processing(self, cik, symbol, file_directories):
+        new_data = []
+        for file_path in file_directories:
+            file_name = os.path.basename(file_path)
+            date_str = file_name.split('.')[0]
+            body = self.import_file(file_path)
+            new_data.append((symbol, cik, date_str, body))
+            
+        return new_data
+
+    
+    def json_processing(self, cik, symbol, file_directories):
+        new_data = []
+        for file_path in file_directories:
+            json_content = self.import_json(file_path)
+            if not json_content:
+                continue
+            attributes = json_content.get("data", {}).get("attributes", {})
+            
+            if not attributes:
+                continue
+            body = attributes.get("content", {})
+            date_str = attributes.get("publishOn", {})
+            date_str = date_str[:10]
+
+            
+            new_data.append((symbol, cik, date_str, body))
+            
+        return new_data
+    
 
     
     # ------------------- file_aggregator (Main Entry) ------------------- #
@@ -173,27 +264,34 @@ class ConstructDTM:
         """
     
         for cik, symbol in self.firms_dict.items():
-            cik_path = os.path.join(self.data_folder, cik)
+
             print('----------------------------------------------------------------')
             print(f"[file_aggregator] Processing parquet: {cik}")
-            # 1) Scan the directory for new or changed files
-            changed_files = self._scan_directory_and_update_db(cik_path, cik)
+            # Scan the directory for new or changed files
+            changed_files = self._scan_directory_and_update_db(self.data_folder, cik, symbol)
             print('changed files', changed_files)
 
             if not changed_files:
                 print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
+            
+            if self.isJson(self.data_folder):
+                new_data = self.json_processing(cik, symbol, changed_files)
+            else:
+                new_data = self.txt_processing(cik, symbol, changed_files)
 
-            # 2) Convert changed files to a Spark DataFrame
-            #    (These are truly new or updated; we reprocess them.)
-            new_data = []
-            for file_path in changed_files:
-                file_name = os.path.basename(file_path)
-                date_str = file_name.split('.')[0]
-                body = self.import_file(file_path)
-                new_data.append((symbol, cik, date_str, body))
+            # # 2) Convert changed files to a Spark DataFrame
+            # #    (These are truly new or updated; we reprocess them.)
+            # new_data = []
+            # for file_path in changed_files:
+            #     file_name = os.path.basename(file_path)
+            #     date_str = file_name.split('.')[0]
+            #     body = self.import_file(file_path)
+            #     new_data.append((symbol, cik, date_str, body))
 
-            # 3) Build Spark DF
+            # Convert changed files to a Spark DataFrame
+            # (These are truly new or updated; we reprocess them.)
+            # Build Spark DF
             new_df = self.spark.createDataFrame(new_data, schema=self.columns)
             new_df = new_df.dropna(how="all", subset=new_df.columns)
             new_df = new_df.select(["Name", "CIK", "Date", "Body"])
@@ -264,7 +362,7 @@ class ConstructDTM:
             db_url
         )).collect()
 
-         # Driver side: gather output file paths
+        # Driver side: gather output file paths
         updated_files_paths = []
         for result in results:
             output_file = result["output_file"]
@@ -450,7 +548,7 @@ class ConstructDTM:
         os.makedirs(dtm_save_path, exist_ok=True)
         df.coalesce(1).write.parquet(dtm_save_path, mode='overwrite')
         print(f"Combined Parquet file saved to {save_path}")
-  
+
 # Example Usage
 if __name__ == "__main__":
     # Initialize Spark session
@@ -464,9 +562,20 @@ if __name__ == "__main__":
     )
 
     # Define input parameters
-    data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/10Q"
+    # Test
+    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/test_analaysis_reports"
+    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
+    
+    # Load
+    data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports"
     firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
+    
+    # # Load 2006
+    # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt-2006"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/10Q-2006"
+    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
     
     firms_df = pd.read_csv(firms_csv_file_path)
     firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
@@ -480,7 +589,7 @@ if __name__ == "__main__":
 
     # Create pipeline and execute tasks
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    pipeline.file_aggregator()
+    # pipeline.file_aggregator()
     pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
     pipeline.concatenate_parquet_files(save_path=save_folder)
     # pipeline.aggregate_data(files_path=save_folder, firms_ciks=firms_ciks)

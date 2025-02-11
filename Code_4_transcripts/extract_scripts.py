@@ -14,18 +14,18 @@ import asyncio
 import aiohttp
 
 # Global variables
-save_folder = "transcripts"
-id_folder = "transcript_ids"
-year_until = 2024
-year_since = 2006
+save_folder = "non_overlap_nasdaq_transcripts"
+id_folder = "non_overlap_nasdaq_transcript_ids"
+year_until = 2026 # Getting the data points untill y.01.01
+year_since = 2000 # Getting the data points since x.01.01
 total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv'
-log_folder_path = '/Users/apple/PROJECT/Code_4_transcripts/log'
+path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
+log_folder_path = '../Code_4_transcripts/log'
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
 CONCURRENCY_LIMIT = 50 # the number of workers working concurrently
@@ -52,7 +52,7 @@ def fetch_ids_for_ticker(ticker: str):
     year_ids = 0
     ticker = ticker.lower()
         
-    for year in range(year_until, year_since, -1):
+    for year in range(year_until, year_since - 1, -1): 
         id2title = defaultdict(lambda: 'title')
         year_file_path = os.path.join(id_folder, f"{ticker}_transcript_ids.json")
         if not os.path.exists(year_file_path):

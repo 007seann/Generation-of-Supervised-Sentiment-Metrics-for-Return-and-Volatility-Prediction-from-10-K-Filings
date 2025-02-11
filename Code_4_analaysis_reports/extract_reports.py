@@ -3,28 +3,36 @@ import os
 import pandas as pd
 import json
 from tqdm import tqdm
-import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import atexit
 from threading import Lock
 from collections import defaultdict
 
+
 import asyncio
 import aiohttp
 
+# Load API key and Host name
+with open('/Users/apple/PROJECT/api/rapidapi_key.txt', 'r') as file:
+    api_key = file.read().strip()
+    
+with open('/Users/apple/PROJECT/api/rapidapi_host.txt', 'r') as file:
+    api_host = file.read().strip()
+
 # Global variables
-save_folder = "NASDAQ100_analysis_reports"
-id_folder = "NASDAQ100_analysis_report_ids"
-year_until = 2024
-year_since = 2006
+save_folder = "non_overlap_nasdaq_analysis_reports"
+id_folder = "non_overlap_nasdaq_analysis_report_ids"
+year_until = 2026 # Getting the data points untill y.01.01
+year_since = 2000 # Getting the data points since x.01.01
 total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv'
+path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
 log_folder_path = '/Users/apple/PROJECT/Code_4_analaysis_reports/log'
 
 # Configuration
@@ -58,9 +66,9 @@ def fetch_ids_for_ticekr(ticker: str):
     if not os.path.exists(ticker_id_folder):
         os.makedirs(ticker_id_folder)
         
-    for year in range(year_until, year_since, -1):
+    for year in range(year_until, year_since - 1, -1): # 2024,..., 2006
         id2title = defaultdict(lambda: 'title')
-        year_file_path = os.path.join(ticker_id_folder, f"{year-1}.json")
+        year_file_path = os.path.join(ticker_id_folder, f"{year}.json") # 2024.json, ..., 2006.json
         if not os.path.exists(year_file_path):
             continue
         with open(year_file_path, 'r') as json_file:
@@ -70,7 +78,7 @@ def fetch_ids_for_ticekr(ticker: str):
                     id = json_data['data'][i]['id']
                     title = json_data['data'][i]['attributes']['title']
                     id2title[id] = title
-        year_id2title[year] = id2title
+        year_id2title[year] = id2title # 2024,...,2006. eg) 2024: 2024's data, ..., 2006: 2006's data
         year_ids_counts = len(id2title)
         total_numIds += year_ids_counts
 
@@ -79,7 +87,7 @@ def fetch_ids_for_ticekr(ticker: str):
 async def fetch_reports(ticker, session, rate_limiter):
     global total_len, valid, total_requests, request_counter
     
-    year_id2title, total_numIds = fetch_ids_for_ticekr(ticker)
+    year_id2title, total_numIds = fetch_ids_for_ticekr(ticker) # 2024,...,2006. eg) 2024: 2024's data, ..., 2006: 2006's data
     years = year_id2title.keys()
     id2title = year_id2title.values()
     ticker = ticker.lower()
@@ -87,7 +95,7 @@ async def fetch_reports(ticker, session, rate_limiter):
     if not os.path.exists(report_save_folder):
         os.makedirs(report_save_folder)
         
-    for year in years:
+    for year in years: # 2024, ... 2006
         year_folder_path = os.path.join(report_save_folder, str(year))
         if not os.path.exists(year_folder_path):
             os.makedirs(year_folder_path)
@@ -106,8 +114,8 @@ async def fetch_reports(ticker, session, rate_limiter):
                 "id": id
             }
             headers = {
-                "x-rapidapi-key": "13f98f0478msha8ec97b6a805b1fp174175jsn98c8458d4397",
-                "x-rapidapi-host": "seeking-alpha.p.rapidapi.com"
+                "x-rapidapi-key": f"{api_key}",
+                "x-rapidapi-host": f"{api_host}"
             }
             
             retries = 0
@@ -156,8 +164,10 @@ def log_state():
     end_time = time.time()
     elapsed_time = end_time - start_time
     log_path = os.path.join(log_folder_path, 'report_api_requests_log.txt')
+    readable_start_time = datetime.fromtimestamp(start_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    readble_end_time = datetime.fromtimestamp(end_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     with open(log_path, 'a') as log_file:
-        log_file.write(f"Total id counts: {total_len}, Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
+        log_file.write(f"Total id counts: {total_len}, Total requests: {total_requests}, Valid requests: {valid}, start time:{readable_start_time}, end time:{readble_end_time}, Elapsed time:{elapsed_time:.2f} second \n")
     print(f"Total data length: {total_len}")
     print(f"Valid requests: {valid}")
     print(f"Elapsed time: {elapsed_time:.2f} seconds")

@@ -13,10 +13,10 @@ total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
-save_folder = "transcript_ids"
-year_until = 2024
-year_since = 2006
-pages = [i for i in range(1, 5)] # Assume the total number of data points per firm is less than 160, including transcripts and earning slides
+save_folder = "non_overlap_nasdaq_transcript_ids"
+# year_until = 2024
+# year_since = 2006
+pages = [i for i in range(1, 3)] # Assume the total number of data points per firm is less than 160, including transcripts and earning slides
 
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
@@ -26,7 +26,7 @@ CONCURRENCY_LIMIT = 60 # Limit to 60 concurrent tasks
 BATCH_SIZE = 30  # Process 30 tickers at a time
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_10k/sp500_total_constituents.csv'
+path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
 
 # Read and process CSV
 try:
@@ -63,10 +63,17 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
     for page in pages:
         url = url = "https://seeking-alpha.p.rapidapi.com/transcripts/v2/list"
         
+        # querystring = {
+        #     "id": ticker,
+        #     "until": "1735689600" , #  2025-01-01 
+        #     "since": "1136073600", # 2006-01-01
+        #     "size": "40",
+        #     "number": page
+        # }
         querystring = {
             "id": ticker,
-            "until": "1735689600" , # 2024
-            "since": "1136073600", # 2006
+            "until": "1767225600" , # 2026-01-01 
+            "since": "946684800", # 2000-01-01
             "size": "40",
             "number": page
         }
