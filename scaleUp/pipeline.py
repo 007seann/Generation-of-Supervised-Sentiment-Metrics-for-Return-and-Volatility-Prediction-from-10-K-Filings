@@ -7,11 +7,10 @@ import multiprocessing
 import logging
 
 from metadata import FileMetadata
-from sqlalchemy import create_engine
 
 import sys
 import os
-
+import json
 # Add the parent directory of hons_project to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -20,7 +19,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 
-
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
 
 def _cleanup_multiprocessing_resources():
     """
@@ -35,6 +35,7 @@ def _cleanup_multiprocessing_resources():
             proc.terminate()
         except Exception as ex:
             pass
+
 
 def compute_file_hash(file_path, chunk_size=65536):
     """Serializable helper function for computing file hash."""
@@ -53,45 +54,24 @@ def get_file_modified_time(file_path):
     return datetime.datetime.fromtimestamp(epoch_time)
 
 
-def file_aggregator_p(self):
-    """
-    Build parquet files for each parquet using Spark, detecting changes via DB metadata.
-    Only process & write out parquet for newly added or changed files.
-    """
-
-    for cik, symbol in self.firms_dict.items():
-
-        print('----------------------------------------------------------------')
-        print(f"[file_aggregator] Processing parquet: {cik}")
-        # Scan the directory for new or changed files
-        changed_files = self._scan_directory_and_update_db(self.data_folder, cik, symbol)
-
-
-        if not changed_files:
-            print(f"[file_aggregator] No new or changed files for parquet: {cik}")
-            continue
-        
-        if self.isJson(self.data_folder):
-            new_data = self.json_processing(cik, symbol, changed_files)
-        else:
-            new_data = self.txt_processing(cik, symbol, changed_files)
-
-        # Convert changed files to a Spark DataFrame
-        # (These are truly new or updated; we reprocess them.)
-        # Build Spark DF
-        new_df = self.spark.createDataFrame(new_data, schema=self.columns)
-        new_df = new_df.dropna(how="all", subset=new_df.columns)
-        new_df = new_df.select(["Name", "CIK", "Date", "Body"])
-        new_df = new_df.orderBy(col("Date"))  # Sort if needed
-
-        # 4) Write the new files to parquet
-        output_path = os.path.join(self.output_folder, cik)
-        # We can append with coalesce(1) => single file per new batch, or multiple part files.
-        new_df.coalesce(1).write.parquet(output_path, mode="append")
-
-        print(f"[file_aggregator] Wrote/updated parquet for {len(changed_files)} file(s) under CIK: {cik}")
-
-    print(f"[file_aggregator] parquet files saved/updated in: {self.output_folder}")
+def _upsert_metadata(session, meta_dict, cik):
+    """Helper to insert or update the FileMetadata row."""
+    file_path = meta_dict["file_path"]
+    record = session.query(FileMetadata).filter_by(file_path=file_path).first()
+    if record:
+        record.file_hash = meta_dict["file_hash"]
+        record.last_modified = meta_dict["last_modified"]
+        record.is_deleted = False
+    else:
+        new_record = FileMetadata(
+            file_path=file_path,
+            last_modified=meta_dict["last_modified"],
+            file_hash=meta_dict["file_hash"],
+            is_deleted=False,
+            cik = cik
+        )
+        session.add(new_record)
+    
 def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_url):
     """
     Worker function invoked by Spark.
@@ -218,22 +198,4 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
         return {"cik": cik, "metadata": [], "output_file": None}
     finally:
         session.close()
-
-
-def _upsert_metadata(session, meta_dict, cik):
-    """Helper to insert or update the FileMetadata row."""
-    file_path = meta_dict["file_path"]
-    record = session.query(FileMetadata).filter_by(file_path=file_path).first()
-    if record:
-        record.file_hash = meta_dict["file_hash"]
-        record.last_modified = meta_dict["last_modified"]
-        record.is_deleted = False
-    else:
-        new_record = FileMetadata(
-            file_path=file_path,
-            last_modified=meta_dict["last_modified"],
-            file_hash=meta_dict["file_hash"],
-            is_deleted=False,
-            cik = cik
-        )
-        session.add(new_record)
+    

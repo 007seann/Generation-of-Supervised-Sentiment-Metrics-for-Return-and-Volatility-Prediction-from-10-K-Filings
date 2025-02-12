@@ -24,6 +24,9 @@ import pyarrow.compute as pc
 import re
 import json
 import time
+
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 # Add the parent directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Register the cleanup function to run at interpreter shutdown
@@ -127,95 +130,6 @@ class ConstructDTM:
         else:
             return False
         
-    def _scan_directory_and_update_db2(self, root_directory, cik, symbol):
-        """
-        **Step 1: Pre-fetch Data from the Database**
-        Scan directory and update metadata in PostgreSQL to identify new or changed files.
-        """
-        # if not os.path.exists(cik_path): ## Some distrinctive flag
-            # cik_path =self.in_memory_directory(symbol_path)
-        symbol = symbol.lower()
-        cik_path = os.path.join(root_directory, cik)
-        symbol_path = os.path.join(self.data_folder, symbol)
-        isJson_flag = False
-        
-        session = self.SessionLocal()
-        newly_added_or_changed = []
-
-        try:
-            if self.isJson(root_directory):
-                isJson_flag = True
-                # Gather all files in the directory
-                all_files = self.in_memory_directory(symbol_path)
-            else:
-                # Gather all files in the directory
-                all_files = [
-                    os.path.join(cik_path, f)
-                    for f in os.listdir(cik_path)
-                    if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
-                ]
-
-                
-            
-            # Fetch metadata from PostgreSQL
-            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
-            db_file_map = {record.file_path: record for record in db_files}
-            
-            
-            # Detect new and updated files
-            for file_path in all_files:
-                file_hash = self.compute_file_hash(file_path)
-                last_modified = self.get_file_modified_time(file_path)
-                existing_record = session.query(FileMetadata).filter(FileMetadata.file_path == file_path).first()
-                if existing_record:
-                    # Update existing record instead of inserting
-                    existing_record.file_hash = file_hash
-                    existing_record.last_modified = last_modified
-                
-                else:
-                # if file_path not in db_file_map:
-                    # New file
-                    new_record = FileMetadata(
-                        file_path=file_path,
-                        last_modified=last_modified,
-                        file_hash=file_hash,
-                        is_deleted=False,
-                        cik = cik
-                    )
-                    session.add(new_record)
-                    newly_added_or_changed.append(file_path)
-                    # Query immediately after committing
-                    db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
-                    
-                # elif (db_file_map[file_path].file_hash != file_hash or
-                #     db_file_map[file_path].last_modified != last_modified):
-                #     # Updated file
-                #     record = db_file_map[file_path]
-                #     record.file_hash = file_hash
-                #     record.last_modified = last_modified
-                #     newly_added_or_changed.append(file_path)
-
-            # Mark deleted files
-            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
-            db_file_map = {record.file_path: record for record in db_files}
-            existing_files = set(all_files)
-            for file_path, record in db_file_map.items():
-                if file_path not in existing_files:
-                    record.is_deleted = True
-
-            session.flush()
-            session.commit()
-
-        except Exception as e:
-            session.rollback()
-            if isJson_flag:
-                logging.error(f"Error scanning directory {symbol_path}: {e}")
-            else:
-                logging.error(f"Error scanning directory {cik_path}: {e}")
-        finally:
-            session.close()
-
-        return newly_added_or_changed
         
     def _scan_directory_and_update_db(self, root_directory, cik, symbol):
         """
@@ -226,7 +140,7 @@ class ConstructDTM:
             # cik_path =self.in_memory_directory(symbol_path)
         symbol = symbol.lower()
         cik_path = os.path.join(root_directory, cik)
-        symbol_path = os.path.join(self.data_folder, symbol)
+        symbol_path = os.path.join(root_directory, symbol)
         isJson_flag = False
         
         session = self.SessionLocal()
@@ -244,19 +158,16 @@ class ConstructDTM:
                     for f in os.listdir(cik_path)
                     if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
                 ]
-
-                
             
             # Fetch metadata from PostgreSQL
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
             db_file_map = {record.file_path: record for record in db_files}
             
-            
             # Detect new and updated files
             for file_path in all_files:
                 file_hash = self.compute_file_hash(file_path)
                 last_modified = self.get_file_modified_time(file_path)
-                existing_record = session.query(FileMetadata).filter(FileMetadata.file_path == file_path).first()
+                existing_record = db_file_map.get(file_path)
                 if existing_record:
                     # Update existing record instead of inserting
                     existing_record.file_hash = file_hash
@@ -274,25 +185,15 @@ class ConstructDTM:
                     )
                     session.add(new_record)
                     newly_added_or_changed.append(file_path)
-                    # Query immediately after committing
-                    db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
-                    
-                # elif (db_file_map[file_path].file_hash != file_hash or
-                #     db_file_map[file_path].last_modified != last_modified):
-                #     # Updated file
-                #     record = db_file_map[file_path]
-                #     record.file_hash = file_hash
-                #     record.last_modified = last_modified
-                #     newly_added_or_changed.append(file_path)
+
 
             # Mark deleted files
-            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
-            db_file_map = {record.file_path: record for record in db_files}
+            db_files_cik = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             existing_files = set(all_files)
-            for file_path, record in db_file_map.items():
-                if file_path not in existing_files:
+            for record in db_files_cik:
+                if record.file_path not in existing_files:
                     record.is_deleted = True
-
+            
             session.flush()
             session.commit()
 
@@ -342,103 +243,61 @@ class ConstructDTM:
             
         return new_data
     
-
-    
     # ------------------- file_aggregator (Main Entry) ------------------- #
+
     def file_aggregator(self):
         """
         Build parquet files for each parquet using Spark, detecting changes via DB metadata.
         Only process & write out parquet for newly added or changed files.
+        Runs `_scan_directory_and_update_db` in parallel using ThreadPoolExecutor.
         """
-    
-        for cik, symbol in self.firms_dict.items():
+        available_cores = multiprocessing.cpu_count()
+        num_threads = min(available_cores, len(self.firms_dict))  # 6 for this machine
+
+        # Step 1: Run `_scan_directory_and_update_db` in parallel
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            future_to_cik = {
+                executor.submit(self._scan_directory_and_update_db, self.data_folder, cik, symbol): (cik, symbol)
+                for cik, symbol in self.firms_dict.items()
+            }
+
+            # Collect results
+            scan_results = {}
+            for future in as_completed(future_to_cik):
+                cik, symbol = future_to_cik[future]
+                try:
+                    changed_files = future.result()
+                    scan_results[(cik, symbol)] = changed_files
+                except Exception as e:
+                    print(f"[Error] Failed scanning CIK {cik}: {e}")
+                    scan_results[(cik, symbol)] = []
+
+        # Step 2: Process each firm sequentially after scanning
+        for (cik, symbol), changed_files in scan_results.items():
 
             print('----------------------------------------------------------------')
             print(f"[file_aggregator] Processing parquet: {cik}")
-            # Scan the directory for new or changed files
-            changed_files = self._scan_directory_and_update_db(self.data_folder, cik, symbol)
-
 
             if not changed_files:
                 print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
-            
+
             if self.isJson(self.data_folder):
                 new_data = self.json_processing(cik, symbol, changed_files)
             else:
                 new_data = self.txt_processing(cik, symbol, changed_files)
 
-            # Convert changed files to a Spark DataFrame
-            # (These are truly new or updated; we reprocess them.)
-            # Build Spark DF
             new_df = self.spark.createDataFrame(new_data, schema=self.columns)
             new_df = new_df.dropna(how="all", subset=new_df.columns)
             new_df = new_df.select(["Name", "CIK", "Date", "Body"])
             new_df = new_df.orderBy(col("Date"))  # Sort if needed
 
-            # 4) Write the new files to parquet
             output_path = os.path.join(self.output_folder, cik)
-            # We can append with coalesce(1) => single file per new batch, or multiple part files.
             new_df.coalesce(1).write.parquet(output_path, mode="append")
 
-            print(f"[file_aggregator] Wrote/updated parquet for {len(changed_files)} file(s) under CIK: {cik}")
-
         print(f"[file_aggregator] parquet files saved/updated in: {self.output_folder}")
-        
-    @staticmethod
-    def file_aggregator_p(cik_symbol, columns, data_folder, save_folder, output_folder, db_url):
-        """
-        Build parquet files for each parquet using Spark, detecting changes via DB metadata.
-        Only process & write out parquet for newly added or changed files.
-        """
-        cik, symbol = cik_symbol
 
 
-
-        print('----------------------------------------------------------------')
-        print(f"[file_aggregator] Processing parquet: {cik}")
-        # Scan the directory for new or changed files
-        changed_files = ConstructDTM._scan_directory_and_update_db2(data_folder, cik, symbol)
-        print('changed files', changed_files)
-
-        if not changed_files:
-            print(f"[file_aggregator] No new or changed files for parquet: {cik}")
-            return
-        
-        if ConstructDTM.isJson(data_folder):
-            new_data = ConstructDTM.json_processing(cik, symbol, changed_files)
-        else:
-            new_data = ConstructDTM.txt_processing(cik, symbol, changed_files)
-
-        # Convert changed files to a Spark DataFrame
-        # (These are truly new or updated; we reprocess them.)
-        # Build Spark DF
-        new_df = ConstructDTM.spark.createDataFrame(new_data, schema=columns)
-        new_df = new_df.dropna(how="all", subset=new_df.columns)
-        new_df = new_df.select(["Name", "CIK", "Date", "Body"])
-        new_df = new_df.orderBy(col("Date"))  # Sort if needed
-
-        # 4) Write the new files to parquet
-        output_path = os.path.join(output_folder, cik)
-        # We can append with coalesce(1) => single file per new batch, or multiple part files.
-        new_df.coalesce(1).write.parquet(output_path, mode="append")
-
-        print(f"[file_aggregator] Wrote/updated parquet for {len(changed_files)} file(s) under CIK: {cik}")
-
-        print(f"[file_aggregator] parquet files saved/updated in: {output_folder}")
-
-    def parallel_processing(self):
-        rdd = self.spark.sparkContext.parallelize(list(self.firms_dict.items()))
-        db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
-        
-        data_folder = self.data_folder
-        save_folder = self.save_folder
-        output_folder = self.output_folder
-        columns = self.columns
-        
-        rdd.map(lambda cik_symbol: ConstructDTM.file_aggregator_p(
-            cik_symbol, columns, data_folder, save_folder, output_folder, db_url
-        )).collect()
 
     def aggregate_data(self, files_path, firms_ciks):
         
@@ -696,19 +555,20 @@ if __name__ == "__main__":
         # Memory allocations
         .config("spark.driver.memory", "8g")
         .config("spark.executor.memory", "8g")
+        .config("spark.sql.shuffle.partitions", "8") 
         .getOrCreate()
     )
 
     # Define input parameters
     # Test
-    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
-    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/test_analaysis_reports"
-    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
+    data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/test_analaysis_reports"
+    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
     
     # # Load
-    data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports"
-    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
+    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports"
+    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
     
     # # Load 2006
     # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt-2006"
@@ -727,10 +587,11 @@ if __name__ == "__main__":
 
     # Create pipeline and execute tasks
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    # pipeline.parallel_processing()
-    # pipeline.file_aggregator()
+    # Aggregation Parallelism
+    # pipeline.parallel_processing(spark)
+    pipeline.file_aggregator()
     # pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
-    pipeline.concatenate_parquet_files(save_path=save_folder)
+    # pipeline.concatenate_parquet_files(save_path=save_folder)
     # pipeline.aggregate_data(files_path=save_folder, firms_ciks=firms_ciks)
 
 
