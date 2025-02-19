@@ -29,32 +29,37 @@ from vol_reader_fun import vol_reader2, price_reader, vol_reader
 
 ############################ #%% Sector level ############################
 
-# QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_constituents.csv" 
-# firms_df = pd.read_csv(QQQfirms_csv_file_path)
-# firms_df = firms_df.drop(['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded'], axis=1)
-# firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
-# seen = set()
-# firms_ciks = [cik for cik in firms_df['CIK'].tolist() if not (cik in seen or seen.add(cik))] 
-# QQQ_weights_file_path =  "/Users/apple/PROJECT/Code_4_10k/QQQ_weights.csv"
-# QQQ_weight_df = pd.read_csv(QQQ_weights_file_path)
-# comp_to_weight_value = pd.Series(QQQ_weight_df.Weight.values, index=QQQ_weight_df.CIK).to_dict()
-# comp_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.items()}
-# NAME = 'Technology Sector'
-# TEMP = 'QQQ'
-# DATA = 'all_QQQ_2'
-# PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
+constituents_path =  "../Code_4_SECfilings/sp500_total_constituents.csv"
+firms_df = pd.read_csv(constituents_path)
+columns_to_drop = ['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded']
+firms_df = firms_df.drop(columns=columns_to_drop, errors='ignore')
+firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
+firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
+firms_dict = {value: key for key, value in firms_dict.items()}
+firms_ciks = list(firms_dict.keys())
+# Need 2025 SEP portfolio and its constituents
 
-# fig_loc = f'/Users/apple/PROJECT/Hons-project/figures_df_{DATA}'
-# if not os.path.exists(fig_loc):
-#     os.makedirs(fig_loc)
-# df_all = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/df_{DATA}.csv')
-# df_all = df_all.set_index('Date')
-# df_all.index = pd.to_datetime(df_all.index)
-# df_all['_ret'] = df_all['_ret']/100
+weights_file_path =  "../Code_4_SECfilings/sp500_2025_weights.csv"
+weight_df = pd.read_csv(weights_file_path)
+comp_to_weight_value = pd.Series(weight_df.Weight.values, index=weight_df.CIK).to_dict()
+comp_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.items()}
+NAME = 'US Market'
+TEMP = 'S&P 500'
+DATA = 'SEC'
+PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
+# What if just get SP500 historical data, and put and compare them?
 
-# lm_sent = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/lm_sent_{DATA}.csv')
-# lm_sent = lm_sent.set_index('Date')
-# lm_sent.index = pd.to_datetime(lm_sent.index)
+fig_loc = f'./outcome/figures_df_{DATA}'
+if not os.path.exists(fig_loc):
+    os.makedirs(fig_loc)
+df_all = pd.read_parquet(f'./data/SP500/SEC/SEC_DTM.parquet')
+df_all = df_all.set_index('Date')
+df_all.index = pd.to_datetime(df_all.index)
+df_all['_ret'] = df_all['_ret']/100
+
+lm_sent = pd.read_parquet(f'./data/SP500/LM/lm_sent_SEC_SP500.parquet')
+lm_sent = lm_sent.set_index('Date')
+lm_sent.index = pd.to_datetime(lm_sent.index)
 
 ############################ #%% Portfolio level ############################
 # QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/top10_QQQ_constituents.csv"
@@ -94,35 +99,35 @@ from vol_reader_fun import vol_reader2, price_reader, vol_reader
 
 ############################# #%% Company level ############################
 
-firms_ciks = ['0001045810']
+# firms_ciks = ['0001045810']
 
-comp_to_weight_value = {
-    '0000320193': 7.44,  # Apple
-    '0000789019': 8.60,  # Microsoft
-    '0001018724': 5.17,  # Amazon
-    '0001730168': 4.80,   # Broadcom
-    '0001326801': 5.12,   # Meta (formerly Facebook)
-    '0001045810': 6.48,   # NVIDIA
-    '0001318605': 2.43,   # Tesla - 2019-12-31: 75.71 B, 2020-12-31: 668.09 B
-    '0001652044': 4.43, # Alphabet (Google)
-    '0000909832': 2.54    # Costco
-}
-NAME = 'Nvidia'
-TEMP = 'Nvidia'
-DATA = 'all_0001045810'
-PORT = 'equal' 
+# comp_to_weight_value = {
+#     '0000320193': 7.44,  # Apple
+#     '0000789019': 8.60,  # Microsoft
+#     '0001018724': 5.17,  # Amazon
+#     '0001730168': 4.80,   # Broadcom
+#     '0001326801': 5.12,   # Meta (formerly Facebook)
+#     '0001045810': 6.48,   # NVIDIA
+#     '0001318605': 2.43,   # Tesla - 2019-12-31: 75.71 B, 2020-12-31: 668.09 B
+#     '0001652044': 4.43, # Alphabet (Google)
+#     '0000909832': 2.54    # Costco
+# }
+# NAME = 'Nvidia'
+# TEMP = 'Nvidia'
+# DATA = 'all_0001045810'
+# PORT = 'equal' 
 
-fig_loc = f'/Users/apple/PROJECT/Hons-project/figures_df_{DATA}'
-if not os.path.exists(fig_loc):
-    os.makedirs(fig_loc)
-df_all = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/df_{DATA}.csv')
-df_all = df_all.set_index('Date')
-df_all.index = pd.to_datetime(df_all.index)
-df_all['_ret'] = df_all['_ret']/100
+# fig_loc = f'/Users/apple/PROJECT/Hons-project/figures_df_{DATA}'
+# if not os.path.exists(fig_loc):
+#     os.makedirs(fig_loc)
+# df_all = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/df_{DATA}.csv')
+# df_all = df_all.set_index('Date')
+# df_all.index = pd.to_datetime(df_all.index)
+# df_all['_ret'] = df_all['_ret']/100
 
-lm_sent = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/lm_sent_{DATA}.csv')
-lm_sent = lm_sent.set_index('Date')
-lm_sent.index = pd.to_datetime(lm_sent.index)
+# lm_sent = pd.read_csv(f'/Users/apple/PROJECT/Hons-project/data/lm_sent_{DATA}.csv')
+# lm_sent = lm_sent.set_index('Date')
+# lm_sent.index = pd.to_datetime(lm_sent.index)
 
 ################################################################################################################
 
@@ -260,7 +265,7 @@ plt.show()
 print(f'% of neutral sentiments VOL: {round((mod_sent_vol == 0.5).sum()/len(mod_sent_vol) * 100, 2)}')
 mod_avg_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
 print('mod_avg_vol', mod_avg_vol)
-mod_kal_vol = kalman(mod_avg_vol, smooth=True)
+mod_kal_vol = kalman(mod_avg_vol, smooth=False)
 plt.plot(mod_avg_vol, label = 'unfiltered')
 plt.plot(mod_kal_vol, label = 'filtered', linewidth=3, linestyle='--')
 plt.xlabel('Date')
