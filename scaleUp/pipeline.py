@@ -72,7 +72,7 @@ def _upsert_metadata(session, meta_dict, cik):
         )
         session.add(new_record)
     
-def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_url):
+def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_url, firms_csv_file_path):
     """
     Worker function invoked by Spark.
     1) Creates a SQLAlchemy session locally (no references to the driver session_maker).
@@ -83,6 +83,12 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
     from hons_project.vol_reader_fun import vol_reader
     engine = create_engine(db_url, echo=False)
     SessionLocal = sessionmaker(bind=engine)
+
+    # Load local firms data    
+    firms_df = pd.read_csv(firms_csv_file_path)
+    firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
+    firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
+    firms_dict = {cik: symbol for symbol, cik in firms_dict.items()}
 
     # -- Build paths --
     cik_folder = os.path.join(folder_path, cik)
@@ -146,7 +152,7 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
         # Combine and process the data
         combined = pd.concat(processed_dataframes)
         # Add volatility data
-        vol_data = vol_reader(cik, start_date=start_date, end_date=end_date)
+        vol_data = vol_reader(cik, firms_dict, start_date=start_date, end_date=end_date)
         combined.reset_index(inplace=True)
         combined = combined.copy()
         first_column_name = combined.columns[0]
@@ -160,7 +166,6 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
 
         # Filter invalid rows and write to Parquet
         combined = combined[combined["_ret"].notna()]
-        
         if processed_dataframes:
             # Update the existing dtm datasets
             existing_files = f"dtm_{cik}.parquet"

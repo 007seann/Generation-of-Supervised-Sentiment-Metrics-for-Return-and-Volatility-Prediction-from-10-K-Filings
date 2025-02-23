@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import json
-import datetime
+from datetime import datetime, timezone
 import time
 import atexit
 import asyncio
@@ -19,7 +19,7 @@ total_len = 0
 valid = 0
 total_requests = 0
 request_counter = 0
-save_folder = "non_overlap_nasdaq_analysis_report_ids"
+save_folder = "analysis_report_ids"
 year_until = 2025 # Getting the data points untill y.12.31
 year_since = 2000 # Getting the data points since x.01.01
 pages = [i for i in range(1, 3)] # Assume the total number of annual reports per firm is less than 80
@@ -32,25 +32,25 @@ CONCURRENCY_LIMIT = 60 # Limit to 60 concurrent tasks
 BATCH_SIZE = 30  # Process 30 tickers at a time
 
 # File path for CSV
-path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
+path = '../Code_4_SECfilings/update_only2025.csv'
 
 # Read and process CSV
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 except UnicodeDecodeError:
     df = pd.read_csv(path, encoding='ISO-8859-1')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 
 
 # Convert years to Unix time
 year2unixTime = {}
-for year in range(year_until + 1, year_since - 1, -1): # 2026, 2025, 2024
-    current_year_timestamp = int(datetime.datetime(year, 1, 1).timestamp())
+for year in range(year_until + 1, year_since - 1, -1): # eg) 2026, 2025, 2024
+    current_year_timestamp = int(datetime(year, 1, 1).timestamp())
     year2unixTime[year] = current_year_timestamp
 
 # Fetch data for a specific ticker
@@ -61,7 +61,7 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
     if not os.path.exists(ticker_save_folder):
         os.makedirs(ticker_save_folder)
 
-    for year in range(year_until + 1, year_since, -1): # 2026, 2025
+    for year in range(year_until + 1, year_since, -1): # eg) 2026, 2025
         year_file_path = os.path.join(ticker_save_folder, f"{year-1}.json")
         if os.path.exists(year_file_path):
             with open(year_file_path, 'r') as json_file:
@@ -108,7 +108,7 @@ async def fetch_data_for_ticker(ticker, session, rate_limiter):
                                 print(f"Invalid content type or empty response. Raw response: {await response.text()}")
                                 response_json = None
                             
-                            if response_json.get('data'):
+                            if response_json and response_json.get('data'):
                                 merged_data['data'].extend(response_json['data'])
                                 total_len += len(response_json['data'])
                                 valid += 1
@@ -146,8 +146,10 @@ def log_state():
     end_time = time.time()
     elapsed_time = end_time - start_time
     log_file_path = 'ids_api_requests_log.txt'
+    readable_start_time = datetime.fromtimestamp(start_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    readble_end_time = datetime.fromtimestamp(end_time, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     with open(log_file_path, 'a') as log_file:
-        log_file.write(f"Total id counts: {total_len}, Total requests: {total_requests}, Valid requests: {valid}, start time:{start_time}, end time:{end_time}, Elapsed time:{elapsed_time:.2f} second \n")
+        log_file.write(f"Total id counts: {total_len}, Total requests: {total_requests}, Valid requests: {valid}, start time:{readable_start_time}, end time:{readble_end_time}, Elapsed time:{elapsed_time:.2f} second \n")
     print(f"Total data length: {total_len}")
     print(f"Valid requests: {valid}")
     print(f"Elapsed time: {elapsed_time:.2f} seconds")
@@ -169,7 +171,7 @@ async def main():
         # Process in batches
         for i in range(0, len(tickers), BATCH_SIZE):
             batch = tickers[i:i + BATCH_SIZE]
-            # print(f"Processing batch {i // BATCH_SIZE + 1}: {batch}")
+            print(f"Processing batch {i // BATCH_SIZE + 1}: {batch}")
             tasks = [fetch_data_for_ticker(ticker, session, rate_limiter) for ticker in batch]
             await asyncio.gather(*tasks)
             

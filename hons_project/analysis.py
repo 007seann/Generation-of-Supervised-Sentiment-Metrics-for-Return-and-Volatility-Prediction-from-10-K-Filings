@@ -52,7 +52,7 @@ PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' 
 fig_loc = f'./outcome/figures_df_{DATA}'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
-df_all = pd.read_parquet(f'./data/SP500/SEC/SEC_DTM.parquet')
+df_all = pd.read_parquet(f'./data/SP500/SEC/SEC_DTM_filtered.parquet')
 df_all = df_all.set_index('Date')
 df_all.index = pd.to_datetime(df_all.index)
 df_all['_ret'] = df_all['_ret']/100
@@ -312,7 +312,7 @@ plt.show()
 
 print('-----------comparision----------')
 # Plotting portfolio
-dfts, firms_ciks = price_reader(firms_ciks, trn_window[0], trn_window[1])
+dfts, firms_ciks = price_reader(firms_ciks, firms_dict, trn_window[0], trn_window[1])
 
 print('--- Constructing portfolio ---')
 if PORT == 'equal':

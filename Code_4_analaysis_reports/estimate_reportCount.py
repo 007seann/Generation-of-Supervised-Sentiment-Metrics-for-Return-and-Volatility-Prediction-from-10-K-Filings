@@ -18,18 +18,18 @@ CONCURRENCY_LIMIT = 60
 BATCH_SIZE = 30 
 
 # File path for CSV
-path = '../Code_4_SECfilings/sp500_total_constituents.csv'
+path = '../Code_4_SECfilings/update_only2025.csv'
 
 # Read and process CSV
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 except UnicodeDecodeError:
     df = pd.read_csv(path, encoding='ISO-8859-1')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
     
 
