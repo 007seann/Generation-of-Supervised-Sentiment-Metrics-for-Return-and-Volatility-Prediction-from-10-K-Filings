@@ -7,8 +7,8 @@ Updated on The Feb 18
 """
 import pandas as pd
 import os
-SAVE_PATH = "./data/SP500/LM"
-input_path = "./data/SP500/10Q-2006/processed"
+SAVE_PATH = "./data/SP500/LM/SEC"
+input_path = "./data/SP500/SEC/SEC_DTM_SP500.parquet"
 
 lm = pd.read_csv("LM_dict.csv")
 lm = lm[['Word','Negative','Positive','Uncertainty']]
@@ -36,7 +36,7 @@ lm_df = pd.concat([pd.Series(1, index = pos_words), pd.Series(-1, index=neg_word
 #                     '0001045810', '0001318605', '0001652044', '0000909832']
 
 # Read firms' ciks
-constituents_path =  "../Code_4_SECfilings/sp500_total_constituents.csv"
+constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
 firms_df = pd.read_csv(constituents_path)
 columns_to_drop = ['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded']
 firms_df = firms_df.drop(columns=columns_to_drop, errors='ignore')
@@ -49,7 +49,7 @@ firms_ciks = list(firms_dict.keys())
 # firms_ciks = [cik for cik in firms_df['CIK'].tolist() if not (cik in seen or seen.add(cik))] 
 
 
-def processing_LM(ciks, path):
+def processing_LM_individually(ciks, path):
     df_lm = pd.DataFrame()
     first = True
     for cik in ciks:
@@ -85,11 +85,41 @@ def processing_LM(ciks, path):
 
     return df_lm
 
+def processing_LM(ciks, file_path):
+    df_lm = pd.DataFrame()
+    first = True
+    comb = pd.read_parquet(file_path)
+    
+    for cik in ciks:
+        print(f'--- Processing {cik} ---')
+        comb_cik = comb[comb["_cik"] == cik]
+        comb_cik = comb_cik.set_index('Date')
+        arts = comb_cik.drop(columns = ['_cik', '_vol', '_ret', '_vol+1', '_ret+1'])
+        total_words = arts.sum(axis=1)
+        words_in_doc = set(arts.columns)
+        ww = list(words_in_doc.intersection(lm_words))
+        # ww = list(words_in_doc.intersection(set(neg_words)))
+        print(f'{len(ww)} terms in LM list')
+        arts_ww = arts[ww]
+        lm_ww = lm_df[ww]
+        lm_sent = pd.DataFrame((arts_ww @ lm_ww) / total_words, index = comb_cik.index)
+        lm_sent['_cik'] = cik
+        if first:
+            df_lm = lm_sent
+            first = False
+        else:
+            df_lm = pd.concat([df_lm, lm_sent], axis=0)
+            
+    return df_lm
+    
+
+
 df = processing_LM(firms_ciks, input_path)
 df = df.rename(columns={0:'_lm'})
-df = df.drop_duplicates()
-df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_SEC_10q-2006.parquet'))
-# df_lm.to_csv(SAVE_PATH, f'lm_sent_{cik}.csv')
+# df = df.drop_duplicates()
+df = df.reset_index().rename(columns={'index':'Date'})
+df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_SEC_test2.parquet'))
+
     
 
 # first = True

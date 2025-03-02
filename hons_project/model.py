@@ -8,8 +8,11 @@ Created on Fri Dec 15
 import pandas as pd
 import numpy as np
 from scipy.optimize import minimize
+from scipy.sparse import csr_matrix
 from pykalman import KalmanFilter
+from time_log_decorator import time_log
 
+@time_log
 def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vol_q=None):
     """
     Trains the model based on a set of term counts from reports labeled with time series data.
@@ -45,20 +48,10 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
     
     DD_doc = DD.drop(columns=['_cik', '_ret', '_vol', '_ret+1', '_vol+1'])
     DD_doc = DD_doc.astype(pd.SparseDtype('int', 0))
-    #DD_doc = DD_doc.clip(upper=20)
         
     term_occur = (DD_doc > 0).sum(axis=0)
     min_occur = term_occur.quantile(q=kappa)
-    
-    #x=term_occur/N*100
-    #x=x.sort_values(ascending=False)
-    #ax = x[:10].plot.bar()
-    #ax.set(ylabel = "Occurence (%)")
-    #ax.set(xlabel = "Term")
-    #plt.tight_layout()
-    #plt.savefig(f'{fig_loc}/term_freqs',dpi=500)
-    #plt.show()
-    
+
     if pprint:
         print(f'Removing terms occuring in < {int(min_occur)} reports')
         print(f"Most common term '{term_occur.idxmax()}' occurs in {round(term_occur.max()/N*100, 1)} % of reports")
@@ -87,13 +80,10 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
     vocab_list = list(DD_doc.columns)
     M = len(vocab_list)
     cooc_high = np.zeros(M)
-    #cooc_low = np.zeros(M)
-    for i in range(M):
-        term = vocab_list[i]
-        arts_incl_term = DD_doc[term] > 0
-        n_arts_incl_term = arts_incl_term.sum()
-        cooc_high[i] = (arts_incl_term & high_vol).sum()/n_arts_incl_term
-        #cooc_low[i] = 1-cooc_high[i]
+        
+    # Computing co-occurrence frequencies of terms with low/high volatility via matrix multiplication
+    arts_incl_term = (DD_doc > 0).astype('int8')
+    cooc_high = (arts_incl_term.T @ high_vol.values.astype('int8')) /arts_incl_term.sum(axis=0)
     
     # Selecting words
     ind_high = np.argsort(-cooc_high)[:alpha_high]
@@ -142,6 +132,7 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
 
     return sent_words, O_hat
 
+@time_log
 def predict_sent(model, arts, llambda):
     """
     Predicts a sentiment score for a 10-K filling given a trained model
@@ -184,7 +175,7 @@ def predict_sent(model, arts, llambda):
             
     return p_hat
             
-
+@time_log
 def loss(p_hat, yy):
     """
     Computes simple loss difference between estimated sentiment scores and normalized rank of time series
@@ -209,7 +200,7 @@ def loss(p_hat, yy):
     yy_ranks = ranks/N + 1/N
     
     return np.sum(np.abs(yy_ranks - p_hat))/N
-
+@time_log
 def loss_perc(p_hat, yy, marg = 0.01, pprint = True):
     """
     Percentage of 10-k fillings correctly esimated as high/low volatility.
@@ -244,7 +235,7 @@ def loss_perc(p_hat, yy, marg = 0.01, pprint = True):
     correct_low = (low_est & (yy<med_vol)).sum()
     
     return (correct_high + correct_low)/N_scored, N_scored/N
-
+@time_log
 def kalman(p_series, n_iter=100, smooth=False):
 
     kf = KalmanFilter(transition_matrices = [[1]], observation_matrices = [[1]])

@@ -124,10 +124,11 @@ class ConstructDTM:
         
         for current_root, dirs, files in os.walk(root_dir):
             for filename in files:
+                if filename.endswith('.DS_Store'):
+                    continue
                 total_files += 1
                 if filename.lower().endswith('.json'):
                     json_files += 1
-            
             
         json_percentage = (json_files / total_files) * 100
         if json_percentage >= 95:
@@ -148,11 +149,12 @@ class ConstructDTM:
         symbol = symbol.lower()
         cik_path = os.path.join(root_directory, cik)
         symbol_path = os.path.join(root_directory, symbol)
+
         isJson_flag = False
         
         session = self.SessionLocal()
         newly_added_or_changed = []
-
+        
         try:
             if self.isJson(root_directory):
                 isJson_flag = True
@@ -165,21 +167,29 @@ class ConstructDTM:
                     for f in os.listdir(cik_path)
                     if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
                 ]
-            
             # Fetch metadata from PostgreSQL
-            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
+            db_files_deleted = session.query(FileMetadata).filter(FileMetadata.is_deleted == True, FileMetadata.cik == cik).all()
+            db_files_deleted_map = {record.file_path: record for record in db_files_deleted}
+            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             db_file_map = {record.file_path: record for record in db_files}
+
             
             # Detect new and updated files
             for file_path in all_files:
                 file_hash = self.compute_file_hash(file_path)
                 last_modified = self.get_file_modified_time(file_path)
                 existing_record = db_file_map.get(file_path)
-                if existing_record:
-                    # Update existing record instead of inserting
-                    existing_record.file_hash = file_hash
-                    existing_record.last_modified = last_modified
-                
+                existing_record_deleted = db_files_deleted_map.get(file_path)
+                if existing_record or existing_record_deleted:
+                    if existing_record:
+                        # Update existing record instead of inserting
+                        existing_record.file_hash = file_hash
+                        existing_record.last_modified = last_modified
+                    else:
+                        existing_record_deleted.file_hash = file_hash
+                        existing_record_deleted.last_modified = last_modified
+                        existing_record_deleted.is_deleted = False                
+        
                 else:
                 # if file_path not in db_file_map:
                     # New file
@@ -190,13 +200,14 @@ class ConstructDTM:
                         is_deleted=False,
                         cik = cik
                     )
+
                     session.add(new_record)
                     newly_added_or_changed.append(file_path)
-
 
             # Mark deleted files
             db_files_cik = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             existing_files = set(all_files)
+
             for record in db_files_cik:
                 if record.file_path not in existing_files:
                     record.is_deleted = True
@@ -212,7 +223,9 @@ class ConstructDTM:
                 logging.error(f"Error scanning directory {cik_path}: {e}")
         finally:
             session.close()
+        
 
+        
         return newly_added_or_changed
     
     def import_json(self, file_path):
@@ -281,6 +294,7 @@ class ConstructDTM:
 
         # Step 2: Process each firm sequentially after scanning
         for (cik, symbol), changed_files in scan_results.items():
+            print("changed_files: ", changed_files)
             if not changed_files:
                 print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
@@ -538,16 +552,16 @@ class ConstructDTM:
         Concatenate all intermediate Parquet files into a single Parquet file.
         """
         # Uncomment them to concatenate files without modification
-        existing_files_path = os.path.join(save_path, 'intermediate')
-        existing_files = os.listdir(existing_files_path)
-        existing_files = [f for f in existing_files if f != '.DS_Store']
-        intermediate_file_paths = [os.path.join(existing_files_path, f) for f in existing_files]
+        # existing_files_path = os.path.join(save_path, 'intermediate')
+        # existing_files = os.listdir(existing_files_path)
+        # existing_files = [f for f in existing_files if f != '.DS_Store']
+        # intermediate_file_paths = [os.path.join(existing_files_path, f) for f in existing_files]
         
-        # intermediate_file_paths = self.multi_stage_parquet_merge(save_path)
+        intermediate_file_paths = self.multi_stage_parquet_merge(save_path)
         filtered_paths = []
         for file_path in intermediate_file_paths:
-            self.convert_timestamps_to_strings(file_path)
             file_path = self.filter_sp500(save_path, file_path, total_constituents_path, constituents_metadata_path)
+            self.convert_timestamps_to_strings(file_path)
             filtered_paths.append(file_path)
                 
         self.spark.conf.set("spark.sql.caseSensitive", "true")
@@ -669,8 +683,8 @@ if __name__ == "__main__":
     
     # Load 2
     data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports"
-    firms_csv_file_path = '../Code_4_SECfilings/update_only2025.csv'
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports/test"
+    firms_csv_file_path = '../Code_4_SECfilings/test.csv'
     
     
     columns = ["Name", "CIK", "Date", "Body"]

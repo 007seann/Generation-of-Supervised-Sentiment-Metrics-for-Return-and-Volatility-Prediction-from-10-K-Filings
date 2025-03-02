@@ -9,7 +9,7 @@ Created on Fri Dec 15 10:34:18 2023
 
 
 import os
-os.chdir('/Users/apple/PROJECT/Hons-project')
+os.chdir('/Users/apple/PROJECT/hons_project')
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,7 +19,8 @@ from statsmodels.iolib.summary2 import summary_col
 import seaborn as sns
 import time
 import sys
-
+from time_log_decorator import time_log
+import pyarrow.parquet as pq
 
 from model import train_model, predict_sent, loss, loss_perc, kalman
 from vol_reader_fun import vol_reader2, price_reader, vol_reader
@@ -29,7 +30,7 @@ from vol_reader_fun import vol_reader2, price_reader, vol_reader
 
 ############################ #%% Sector level ############################
 
-constituents_path =  "../Code_4_SECfilings/sp500_total_constituents.csv"
+constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
 firms_df = pd.read_csv(constituents_path)
 columns_to_drop = ['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded']
 firms_df = firms_df.drop(columns=columns_to_drop, errors='ignore')
@@ -52,14 +53,29 @@ PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' 
 fig_loc = f'./outcome/figures_df_{DATA}'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
-df_all = pd.read_parquet(f'./data/SP500/SEC/SEC_DTM_filtered.parquet')
+    
+input_path = "./data/SP500/SEC/SEC_DTM_SP500.parquet"
+dataset = pq.ParquetDataset(input_path)
+table = dataset.read()
+df_all = table.to_pandas()
+df_all = df_all.reset_index()
+df_all = df_all.sort_values(by=['Date', '_cik']).reset_index(drop=True)
+df_all = df_all.drop(columns=["level_0"], errors='ignore')
 df_all = df_all.set_index('Date')
 df_all.index = pd.to_datetime(df_all.index)
 df_all['_ret'] = df_all['_ret']/100
 
-lm_sent = pd.read_parquet(f'./data/SP500/LM/lm_sent_SEC_SP500.parquet')
+input_path = "./data/SP500/LM/SEC/lm_sent_SEC_test2.parquet"
+dataset = pq.ParquetDataset(input_path)
+table = dataset.read()
+lm_sent = table.to_pandas()
+lm_sent = lm_sent.reset_index()
+lm_sent = lm_sent.sort_values(by=['Date', '_cik']).reset_index(drop=True)
+lm_sent = lm_sent.drop(columns=["index"], errors='ignore')
 lm_sent = lm_sent.set_index('Date')
 lm_sent.index = pd.to_datetime(lm_sent.index)
+
+
 
 ############################ #%% Portfolio level ############################
 # QQQfirms_csv_file_path =  "/Users/apple/PROJECT/Code_4_10k/top10_QQQ_constituents.csv"
@@ -162,10 +178,10 @@ for dep in ['_ret', '_vol']:
         S_pos_ret, S_neg_ret = mod[0][:alpha_high], mod[0][alpha_high:]
         mod_ret = mod
     else:
-        mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = 0.65)
+        mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = None)
         S_pos_vol, S_neg_vol = mod[0][:alpha_high], mod[0][alpha_high:]
         mod_vol = mod
-        mod_vol2 = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = None)
+        # mod_vol2 = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = None)
     
     # Make predictions on training data
     train_set = df_trn
