@@ -7,8 +7,8 @@ Updated on The Feb 18
 """
 import pandas as pd
 import os
-SAVE_PATH = "./data/SP500/LM/SEC"
-input_path = "./data/SP500/SEC/SEC_DTM_SP500.parquet"
+SAVE_PATH = "./data/SP500/LM/transcripts"
+input_path = "./data/SP500/transcripts/dtm/transcripts_DTM_SP500.parquet"
 
 lm = pd.read_csv("LM_dict.csv")
 lm = lm[['Word','Negative','Positive','Uncertainty']]
@@ -118,7 +118,7 @@ df = processing_LM(firms_ciks, input_path)
 df = df.rename(columns={0:'_lm'})
 # df = df.drop_duplicates()
 df = df.reset_index().rename(columns={'index':'Date'})
-df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_SEC_test2.parquet'))
+df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_transcripts_SP500.parquet'))
 
     
 

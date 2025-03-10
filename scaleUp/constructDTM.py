@@ -167,12 +167,15 @@ class ConstructDTM:
                     for f in os.listdir(cik_path)
                     if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
                 ]
+            print("all_files", all_files)
             # Fetch metadata from PostgreSQL
             db_files_deleted = session.query(FileMetadata).filter(FileMetadata.is_deleted == True, FileMetadata.cik == cik).all()
             db_files_deleted_map = {record.file_path: record for record in db_files_deleted}
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             db_file_map = {record.file_path: record for record in db_files}
 
+            print("######################")
+            print("db_file_map", db_file_map)
             
             # Detect new and updated files
             for file_path in all_files:
@@ -253,7 +256,11 @@ class ConstructDTM:
             attributes = json_content.get("data", {}).get("attributes", {})
             
             if not attributes:
-                continue
+                body = json_content.get("transcript", {})
+                date_str = json_content.get("date", {})
+                date_str = date_str[:10]
+                new_data.append((symbol, cik, date_str, body))
+                return new_data
             body = attributes.get("content", {})
             date_str = attributes.get("publishOn", {})
             date_str = date_str[:10]
@@ -262,6 +269,7 @@ class ConstructDTM:
             new_data.append((symbol, cik, date_str, body))
             
         return new_data
+
     
     # ------------------- file_aggregator (Main Entry) ------------------- #
 
@@ -294,7 +302,6 @@ class ConstructDTM:
 
         # Step 2: Process each firm sequentially after scanning
         for (cik, symbol), changed_files in scan_results.items():
-            print("changed_files: ", changed_files)
             if not changed_files:
                 print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
@@ -682,9 +689,9 @@ if __name__ == "__main__":
     # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv"
     
     # Load 2
-    data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports/test"
-    firms_csv_file_path = '../Code_4_SECfilings/test.csv'
+    data_folder = "/Users/apple/PROJECT/Code_4_transcripts/transcripts_ninjaAPI"
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/transcripts_ninjaAPI"
+    firms_csv_file_path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.final.csv'
     
     
     columns = ["Name", "CIK", "Date", "Body"]
@@ -695,7 +702,7 @@ if __name__ == "__main__":
     pipeline = ConstructDTM(spark, data_folder, save_folder, firms_csv_file_path, columns, start_date, end_date)
 
     start_time_1 = time.time()
-    # pipeline.file_aggregator()
+    pipeline.file_aggregator()
     end_time_1 = time.time()
     
     

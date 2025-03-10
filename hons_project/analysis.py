@@ -47,7 +47,7 @@ comp_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.it
 NAME = 'US Market'
 TEMP = 'S&P 500'
 DATA = 'SEC'
-PORT = 'value' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
+PORT = 'equal' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
 # What if just get SP500 historical data, and put and compare them?
 
 fig_loc = f'./outcome/figures_df_{DATA}'
@@ -62,9 +62,9 @@ df_all = df_all.reset_index()
 df_all = df_all.sort_values(by=['Date', '_cik']).reset_index(drop=True)
 df_all = df_all.drop(columns=["level_0"], errors='ignore')
 df_all = df_all.set_index('Date')
-df_all.index = pd.to_datetime(df_all.index)
+df_all.index = pd.to_datetime(df_all.index, utc=True)
+df_all.index = df_all.index.to_series().dt.strftime('%Y-%m-%d')
 df_all['_ret'] = df_all['_ret']/100
-
 input_path = "./data/SP500/LM/SEC/lm_sent_SEC_test2.parquet"
 dataset = pq.ParquetDataset(input_path)
 table = dataset.read()
@@ -73,7 +73,8 @@ lm_sent = lm_sent.reset_index()
 lm_sent = lm_sent.sort_values(by=['Date', '_cik']).reset_index(drop=True)
 lm_sent = lm_sent.drop(columns=["index"], errors='ignore')
 lm_sent = lm_sent.set_index('Date')
-lm_sent.index = pd.to_datetime(lm_sent.index)
+lm_sent.index = pd.to_datetime(lm_sent.index, utc=True)
+lm_sent.index = lm_sent.index.to_series().dt.strftime('%Y-%m-%d')
 
 
 
@@ -216,7 +217,7 @@ def impactful_words(mod, dep):
     plt.xticks(fontsize=4)
     plt.xticks(rotation=90)
     plt.savefig(f'{fig_loc}/most_impactful_words'+'_'+dep, dpi=500)
-    plt.show()
+    # plt.show()
 
     S_hat = mod[0]
     alpha = int(len(S_hat)/2)
@@ -236,16 +237,6 @@ def impactful_words(mod, dep):
     df_neg = pd.DataFrame(tone_neg[neg_ind], index = S_neg[neg_ind], columns = ['tone'])[:15]
     df_neg.to_csv(f'{fig_loc}/most_impactful_neg_words'+'_'+dep +'.csv', index=True)
     
-    plt.bar(df_pos.index,df_pos['tone'])
-    plt.xticks(rotation=30)
-    plt.savefig(f'{fig_loc}/most_impactful_pos_words'+'_'+dep, dpi=500)
-    plt.show()
-
-    plt.bar(df_neg.index,df_neg['tone'])
-    plt.xticks(rotation=30)
-    plt.savefig(f'{fig_loc}/most_impactful_neg_words'+'_'+dep, dpi=500)
-    plt.show()
-    
 
 for i, mod  in enumerate([mod_ret, mod_vol]):
     if i == 0:
@@ -262,10 +253,59 @@ def rescale(x, unit=True):
     else:
         return (x - x.mean() + 0.5)
     
+# # Ret sentiments
+# print(f'% of neutral sentiments RET: {round((mod_sent_ret == 0.5).sum()/len(mod_sent_ret) * 100, 2)}')
+# mod_avg_ret = mod_sent_ret.groupby(mod_sent_ret.index).mean()
+# mod_kal_ret = kalman(mod_avg_ret, smooth=True)
+# print('mod_kal_ret', mod_kal_ret)
+
+# # Save data points to CSV files
+# mod_avg_ret.to_csv(f'{fig_loc}/mod_avg_ret.csv')
+# mod_kal_ret.to_csv(f'{fig_loc}/mod_kal_ret.csv')
+
+# # Vol sentiments
+# print(f'% of neutral sentiments VOL: {round((mod_sent_vol == 0.5).sum()/len(mod_sent_vol) * 100, 2)}')
+# mod_avg_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
+# mod_kal_vol = kalman(mod_avg_vol, smooth=False)
+
+# # Save data points to CSV files
+# mod_avg_vol.to_csv(f'{fig_loc}/mod_avg_vol.csv')
+# mod_kal_vol.to_csv(f'{fig_loc}/mod_kal_vol.csv')
+
+# # LM sentiments
+# assert all(lm_sent.index == df_all.index) and all(lm_sent['_cik'] == df_all['_cik'])
+# print("length check", lm_sent['_lm'].sort_index())
+# lm_trn = lm_sent['_lm'].sort_index()[:f'{trn_window[1]}']
+
+# print(f'% of netural sentiments LM: {round(lm_trn == 0).sum()/len(lm_trn) * 100, 2)}')
+# lm_avg = lm_trn.groupby(lm_trn.index).mean()
+# lm_avg = (lm_avg - lm_avg.min())/(lm_avg.max() - lm_avg.min())
+# lm_kal = kalman(lm_avg, smooth=True)
+
+# # Save data points to CSV files
+# lm_avg.to_csv(f'{fig_loc}/lm_avg.csv')
+# lm_kal.to_csv(f'{fig_loc}/lm_kal.csv')
+
+# # Save portfolio data points
+# port_val.to_csv(f'{fig_loc}/port_val.csv')
+
+# # Save correlation data points
+# sents.to_csv(f'{fig_loc}/sents.csv')
+# sents_tilde.to_csv(f'{fig_loc}/sents_tilde.csv')
+
+# # Save other necessary data points
+# port_val_aligned.to_csv(f'{fig_loc}/port_val_aligned.csv')
+
+
+
+    
+    
+    
 # Ret sentiments
 print(f'% of neutral sentiments RET: {round((mod_sent_ret == 0.5).sum()/len(mod_sent_ret) * 100, 2)}')
 mod_avg_ret = mod_sent_ret.groupby(mod_sent_ret.index).mean()
 mod_kal_ret = kalman(mod_avg_ret, smooth=True)
+print('mod_kal_ret', mod_kal_ret)
 plt.plot(mod_avg_ret, label = 'unfiltered')
 plt.plot(mod_kal_ret, label = 'filtered', linewidth=3, linestyle='--')
 plt.xlabel('Date')
@@ -274,13 +314,12 @@ plt.legend(loc='upper right')
 plt.legend(fontsize=18)
 plt.title('RET Sentiment')
 plt.tight_layout()
+# plt.show()
 plt.savefig(f'{fig_loc}/ret_filter', dpi=500)
-plt.show()
 
 # Vol sentiments
 print(f'% of neutral sentiments VOL: {round((mod_sent_vol == 0.5).sum()/len(mod_sent_vol) * 100, 2)}')
 mod_avg_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
-print('mod_avg_vol', mod_avg_vol)
 mod_kal_vol = kalman(mod_avg_vol, smooth=False)
 plt.plot(mod_avg_vol, label = 'unfiltered')
 plt.plot(mod_kal_vol, label = 'filtered', linewidth=3, linestyle='--')
@@ -290,8 +329,8 @@ plt.legend(loc = 'upper right')
 plt.legend(fontsize=18)
 plt.title('VOL Sentiment')
 plt.tight_layout()
+# plt.show()
 plt.savefig(f'{fig_loc}/vol_filter', dpi=500)
-plt.show()
 
 # LM sentiments
 
@@ -311,7 +350,7 @@ plt.legend(loc = 'upper right')
 plt.title('LM Sentiments')
 plt.tight_layout()
 plt.savefig(f'{fig_loc}/LM_filter', dpi=500)
-plt.show()
+# plt.show()
 
 
 
@@ -353,6 +392,12 @@ fig, ax = plt.subplots()
 ax.plot(port_val, color = 'silver', linestyle = 'dashed', label = f'{TEMP} Stock')
 ax.set_xlabel("Date")
 ax.set_ylabel(f'{TEMP} Stock')
+mod_kal_ret.index = pd.to_datetime(mod_kal_ret.index, utc=True)
+mod_kal_ret.index = mod_kal_ret.index.to_series().dt.strftime('%Y-%m-%d')
+mod_kal_vol.index = pd.to_datetime(mod_kal_vol.index, utc=True)
+mod_kal_vol.index = mod_kal_vol.index.to_series().dt.strftime('%Y-%m-%d')
+lm_kal.index = pd.to_datetime(lm_kal.index, utc=True)
+lm_kal.index = lm_kal.index.to_series().dt.strftime('%Y-%m-%d')
 ax2 = ax.twinx()
 ax2.plot(mod_kal_ret, label = r'${\tilde{p}^{RET}}$')
 ax2.plot(mod_kal_vol, label = r'${\tilde{p}^{VOL}}$')
@@ -364,7 +409,7 @@ fig.legend(bbox_to_anchor = (0.33, 0.7))
 fig.autofmt_xdate(rotation=50)
 plt.title(f"{NAME} Sentiment Score Prediction")
 plt.savefig(f'{fig_loc}/{NAME} Sentiment Prediction', dpi=500)
-plt.show()
+# plt.show()
 
 
 fig, ax = plt.subplots()

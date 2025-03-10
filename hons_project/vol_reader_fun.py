@@ -62,7 +62,7 @@ def vol_reader(comp, firms_dict, start_date=None, end_date=None):
             return np.square(ran)/adj_factor
         elif proxy == 'return':
             def ret_fun(xt_1, xt):
-                return np.log(xt_1/xt) ### used to xt/xt_1
+                return np.log(xt/xt_1) ### used to xt/xt_1 -> I think it's right
             return ret_fun(ret['Open'], ret['Close'])
         else:
             assert proxy == 'squared return'
