@@ -12,11 +12,6 @@ import datetime as dt
 
 import yfinance as yf
 
-QQQfirms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
-firms_df = pd.read_csv(QQQfirms_csv_file_path)
-firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
-firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
-firms_dict = {value: key for key, value in firms_dict.items()}
 
 def transform_parquet_to_yf_format(parquet_path):
     # Read the Parquet file
@@ -44,8 +39,8 @@ def transform_parquet_to_yf_format(parquet_path):
     
     return df
 
-def vol_reader(comp, start_date=None, end_date=None):
-    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
+def vol_reader(comp, firms_dict, start_date=None, end_date=None):
+    price_data_path = "../data/stock_price_daily.parquet"
     stock = firms_dict[comp]
     # print(f'Downloading {stock} stock data')
     # time_series = yf.download(stock, 
@@ -53,6 +48,7 @@ def vol_reader(comp, start_date=None, end_date=None):
     #                         end = end_date,
     #                         progress = False)
     price_df = transform_parquet_to_yf_format(price_data_path)
+
     time_series = price_df[price_df['Symbol'] == stock]
     time_series = time_series.loc[start_date:end_date]
     def vol_proxy(ret, proxy):
@@ -66,7 +62,7 @@ def vol_reader(comp, start_date=None, end_date=None):
             return np.square(ran)/adj_factor
         elif proxy == 'return':
             def ret_fun(xt_1, xt):
-                return np.log(xt_1/xt) ### used to xt/xt_1
+                return np.log(xt/xt_1) ### used to xt/xt_1 -> I think it's right
             return ret_fun(ret['Open'], ret['Close'])
         else:
             assert proxy == 'squared return'
@@ -86,10 +82,10 @@ def vol_reader(comp, start_date=None, end_date=None):
     df_vol.set_index('Date', inplace=True)
     return df_vol
 
-def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, extra_start = False, AR = None):
+def vol_reader2(comps, firms_dict, start_date, end_date, window = None, extra_end = False, extra_start = False, AR = None):
     def ret_fun(xt_1, xt): # log difference
         return np.log(xt_1/xt) ### used to xt/xt_1
-    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
+    price_data_path = "../data/stock_price_daily.parquet"
     price_df = transform_parquet_to_yf_format(price_data_path)
     ts = []
     empty = []
@@ -197,8 +193,8 @@ def vol_reader2(comps, start_date, end_date, window = None, extra_end = False, e
     return df_ret, df_vol
     
 
-def price_reader(comps, start_date, end_date):
-    price_data_path = "/Users/apple/PROJECT/data/stock_price_daily.parquet"
+def price_reader(comps, firms_dict, start_date, end_date):
+    price_data_path = "../data/stock_price_daily.parquet"
     price_df = transform_parquet_to_yf_format(price_data_path)
     ts = []
     empty = []

@@ -22,8 +22,8 @@ with open('/Users/apple/PROJECT/api/rapidapi_host.txt', 'r') as file:
     api_host = file.read().strip()
 
 # Global variables
-save_folder = "non_overlap_nasdaq_analysis_reports"
-id_folder = "non_overlap_nasdaq_analysis_report_ids"
+save_folder = "analysis_reports"
+id_folder = "analysis_report_ids"
 year_until = 2026 # Getting the data points untill y.01.01
 year_since = 2000 # Getting the data points since x.01.01
 total_len = 0
@@ -32,7 +32,7 @@ total_requests = 0
 request_counter = 0
 
 # File path for CSV
-path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
+path = '../Code_4_SECfilings/update_only2025.csv'
 log_folder_path = '/Users/apple/PROJECT/Code_4_analaysis_reports/log'
 
 # Configuration
@@ -46,12 +46,12 @@ MAX_RETRIES = 5 # Retry up to 5 times on failures
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 except UnicodeDecodeError:
     df = pd.read_csv(path, encoding='ISO-8859-1')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 
 

@@ -14,8 +14,8 @@ import asyncio
 import aiohttp
 
 # Global variables
-save_folder = "non_overlap_nasdaq_transcripts"
-id_folder = "non_overlap_nasdaq_transcript_ids"
+save_folder = "transcripts"
+id_folder = "transcript_ids"
 year_until = 2026 # Getting the data points untill y.01.01
 year_since = 2000 # Getting the data points since x.01.01
 total_len = 0
@@ -24,7 +24,7 @@ total_requests = 0
 request_counter = 0
 
 # File path for CSV
-path = '../Code_4_SECfilings/non_overlap_nasdaq.csv'
+path = '../Code_4_SECfilings/update_only2025.csv'
 log_folder_path = '../Code_4_transcripts/log'
 # Configuration
 RATE_LIMIT = 5 # Maximum requests per second
@@ -37,12 +37,12 @@ MAX_RETRIES = 5 # Retry up to 5 times on failures
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 except UnicodeDecodeError:
     df = pd.read_csv(path, encoding='ISO-8859-1')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 
 # Returns a nested dicionary for a ticker; { 'year1': {'ids': 'titles'}, 'year2' : {}, ...  }

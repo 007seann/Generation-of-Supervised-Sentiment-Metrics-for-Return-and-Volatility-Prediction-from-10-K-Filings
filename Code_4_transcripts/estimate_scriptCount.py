@@ -6,7 +6,7 @@ import aiohttp
 import pandas as pd
 
 # Global variables
-id_folder = "transcript_ids"
+id_folder = "transcript_ids_test"
 year_since = 2006
 year_until = 2024
 
@@ -17,18 +17,18 @@ CONCURRENCY_LIMIT = 60
 BATCH_SIZE = 30 
 
 # File path for CSV
-path = '/Users/apple/PROJECT/Code_4_10k/sp500_total_constituents.csv'
+path = '../Code_4_SECfilings/update_only2025.csv'
 
 # Read and process CSV
 try:
     df = pd.read_csv(path, encoding='utf-8')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
 except UnicodeDecodeError:
     df = pd.read_csv(path, encoding='ISO-8859-1')
     cik = df['CIK'].drop_duplicates().tolist()
-    ticker = df['Symbol'].tolist()
+    ticker = df['Ticker'].tolist()
     cik_ticker = dict(zip(cik, ticker))
     
 
@@ -47,7 +47,7 @@ async def fetch_ids_for_ticker(ticker: str, semaphore: asyncio.Semaphore):
                         title = json_data['data'][i]['attributes']['title']
                         id2title[id] = title
         id_counts = len(id2title)
-        with open('sp500_transcripts_counts.txt', 'a') as file:
+        with open('sp500_update_transcripts_counts.txt', 'a') as file:
             file.write(f"{ticker}:{id_counts}\n ")
 
 

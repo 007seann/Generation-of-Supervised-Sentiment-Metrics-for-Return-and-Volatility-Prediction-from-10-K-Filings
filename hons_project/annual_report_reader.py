@@ -123,7 +123,7 @@ def reader(file_name, file_loc):
     # Create DataFrame from list of dictionaries
     D_df = pd.DataFrame(data, index=index).fillna(0)
     D_df.index = pd.to_datetime(D_df.index)
-   
+
     
     
     """

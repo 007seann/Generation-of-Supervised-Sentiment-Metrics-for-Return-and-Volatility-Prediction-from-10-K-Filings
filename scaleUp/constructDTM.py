@@ -24,7 +24,7 @@ import pyarrow.compute as pc
 import re
 import json
 import time
-
+import asyncio
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 # Add the parent directory to sys.path
@@ -35,18 +35,23 @@ atexit.register(_cleanup_multiprocessing_resources)
 # ------------------ SQLAlchemy Setup ------------------ #
 
 class ConstructDTM:
-    def __init__(self, spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date):
+    def __init__(self, spark, data_folder, save_folder, firms_csv_file_path, columns, start_date, end_date):
         self.spark = spark
         self.data_folder = data_folder
         self.save_folder = save_folder
-        self.firms_dict = firms_dict
-        self.firms_ciks = firms_ciks
         self.columns = columns
         self.start_date = start_date
         self.end_date = end_date
         self.output_folder = os.path.join(save_folder, 'company_df')
         os.makedirs(self.output_folder, exist_ok=True)
         
+        
+        # Set up firms dictionary from CSV file
+        firms_df = pd.read_csv(firms_csv_file_path)
+        firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
+        firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
+        firms_dict = {cik: symbol for symbol, cik in firms_dict.items()}
+        self.firms_dict = firms_dict
         # Add hons_project.zip to SparkContext
         self.spark.sparkContext.addPyFile("/Users/apple/PROJECT/package/hons_project.zip")
 
@@ -119,10 +124,11 @@ class ConstructDTM:
         
         for current_root, dirs, files in os.walk(root_dir):
             for filename in files:
+                if filename.endswith('.DS_Store'):
+                    continue
                 total_files += 1
                 if filename.lower().endswith('.json'):
                     json_files += 1
-            
             
         json_percentage = (json_files / total_files) * 100
         if json_percentage >= 95:
@@ -138,14 +144,17 @@ class ConstructDTM:
         """
         # if not os.path.exists(cik_path): ## Some distrinctive flag
             # cik_path =self.in_memory_directory(symbol_path)
+
+        print(f"[file_aggregator] Processing parquet: {cik}: {symbol}")
         symbol = symbol.lower()
         cik_path = os.path.join(root_directory, cik)
         symbol_path = os.path.join(root_directory, symbol)
+
         isJson_flag = False
         
         session = self.SessionLocal()
         newly_added_or_changed = []
-
+        
         try:
             if self.isJson(root_directory):
                 isJson_flag = True
@@ -158,21 +167,32 @@ class ConstructDTM:
                     for f in os.listdir(cik_path)
                     if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
                 ]
-            
+            print("all_files", all_files)
             # Fetch metadata from PostgreSQL
-            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False).all()
+            db_files_deleted = session.query(FileMetadata).filter(FileMetadata.is_deleted == True, FileMetadata.cik == cik).all()
+            db_files_deleted_map = {record.file_path: record for record in db_files_deleted}
+            db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             db_file_map = {record.file_path: record for record in db_files}
+
+            print("######################")
+            print("db_file_map", db_file_map)
             
             # Detect new and updated files
             for file_path in all_files:
                 file_hash = self.compute_file_hash(file_path)
                 last_modified = self.get_file_modified_time(file_path)
                 existing_record = db_file_map.get(file_path)
-                if existing_record:
-                    # Update existing record instead of inserting
-                    existing_record.file_hash = file_hash
-                    existing_record.last_modified = last_modified
-                
+                existing_record_deleted = db_files_deleted_map.get(file_path)
+                if existing_record or existing_record_deleted:
+                    if existing_record:
+                        # Update existing record instead of inserting
+                        existing_record.file_hash = file_hash
+                        existing_record.last_modified = last_modified
+                    else:
+                        existing_record_deleted.file_hash = file_hash
+                        existing_record_deleted.last_modified = last_modified
+                        existing_record_deleted.is_deleted = False                
+        
                 else:
                 # if file_path not in db_file_map:
                     # New file
@@ -183,13 +203,14 @@ class ConstructDTM:
                         is_deleted=False,
                         cik = cik
                     )
+
                     session.add(new_record)
                     newly_added_or_changed.append(file_path)
-
 
             # Mark deleted files
             db_files_cik = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             existing_files = set(all_files)
+
             for record in db_files_cik:
                 if record.file_path not in existing_files:
                     record.is_deleted = True
@@ -205,7 +226,9 @@ class ConstructDTM:
                 logging.error(f"Error scanning directory {cik_path}: {e}")
         finally:
             session.close()
+        
 
+        
         return newly_added_or_changed
     
     def import_json(self, file_path):
@@ -233,7 +256,11 @@ class ConstructDTM:
             attributes = json_content.get("data", {}).get("attributes", {})
             
             if not attributes:
-                continue
+                body = json_content.get("transcript", {})
+                date_str = json_content.get("date", {})
+                date_str = date_str[:10]
+                new_data.append((symbol, cik, date_str, body))
+                return new_data
             body = attributes.get("content", {})
             date_str = attributes.get("publishOn", {})
             date_str = date_str[:10]
@@ -242,6 +269,7 @@ class ConstructDTM:
             new_data.append((symbol, cik, date_str, body))
             
         return new_data
+
     
     # ------------------- file_aggregator (Main Entry) ------------------- #
 
@@ -274,10 +302,6 @@ class ConstructDTM:
 
         # Step 2: Process each firm sequentially after scanning
         for (cik, symbol), changed_files in scan_results.items():
-
-            print('----------------------------------------------------------------')
-            print(f"[file_aggregator] Processing parquet: {cik}")
-
             if not changed_files:
                 print(f"[file_aggregator] No new or changed files for parquet: {cik}")
                 continue
@@ -296,11 +320,10 @@ class ConstructDTM:
             new_df.coalesce(1).write.parquet(output_path, mode="append")
 
         print(f"[file_aggregator] parquet files saved/updated in: {self.output_folder}")
+    
 
-
-
-    def aggregate_data(self, files_path, firms_ciks):
-        
+    def aggregate_data(self, files_path, firms_dict):
+        firms_ciks = list(firms_dict.keys())
         folder = 'company_df'
         folder_path = os.path.join(files_path, folder)
         if not os.path.exists(folder_path):
@@ -330,7 +353,7 @@ class ConstructDTM:
 
         
                 
-    def process_filings_for_cik_spark(self, save_folder, start_date, end_date):
+    def process_filings_for_cik_spark(self, save_folder, start_date, end_date, firms_csv_file_path):
         """
         Orchestrates the processing of CIK files:
         1. Distributes tasks to Spark workers using run_process_for_cik.
@@ -344,8 +367,12 @@ class ConstructDTM:
         folder_path = os.path.join(self.save_folder, folder)
         os.makedirs(folder_path, exist_ok=True)
 
+        firms_ciks = list(self.firms_dict.keys())
+        
+        # Batch process adding and updating metadata in the database
+
         # 1) Distribute tasks to workers
-        rdd = self.spark.sparkContext.parallelize(self.firms_ciks)
+        rdd = self.spark.sparkContext.parallelize(firms_ciks)
         db_url = "postgresql://apple:qwer@localhost:5432/seanchoimetadata"
         
         results = rdd.map(lambda cik: run_process_for_cik(
@@ -354,7 +381,8 @@ class ConstructDTM:
             folder_path,
             start_date,
             end_date,
-            db_url
+            db_url,
+            firms_csv_file_path
         )).collect()
 
         # Driver side: gather output file paths
@@ -408,6 +436,7 @@ class ConstructDTM:
         # print('file_path', file_paths)
         
         existing_files_path = os.path.join(save_path, 'processed')
+        os.makedirs(existing_files_path, exist_ok=True)
         existing_files = os.listdir(existing_files_path)
         existing_files = [f for f in existing_files if f != '.DS_Store']
         existing_files = [os.path.join(existing_files_path, f) for f in existing_files]
@@ -445,7 +474,7 @@ class ConstructDTM:
                 batch_df = batch_df.drop_duplicates(subset=["Date", "_cik", "_vol", "_ret"]).fillna(0.0)
                 
                 # Generate 3-day rolling returns and volatilities for the provided firms' CIKs
-                x1, x2 = vol_reader2(batch_ciks, start_date, end_date, window=3, extra_end=True, extra_start=True)
+                x1, x2 = vol_reader2(batch_ciks, self.firms_dict, start_date, end_date, window=3, extra_end=True, extra_start=True)
 
                 # Shift the data by one time step to align with the desired time window
                 x1 = x1.shift(1)
@@ -525,7 +554,7 @@ class ConstructDTM:
         df.to_parquet(df_path, index=False)
 
     
-    def concatenate_parquet_files(self, save_path):
+    def concatenate_parquet_files(self, save_path, total_constituents_path, constituents_metadata_path):
         """
         Concatenate all intermediate Parquet files into a single Parquet file.
         """
@@ -536,16 +565,105 @@ class ConstructDTM:
         # intermediate_file_paths = [os.path.join(existing_files_path, f) for f in existing_files]
         
         intermediate_file_paths = self.multi_stage_parquet_merge(save_path)
+        filtered_paths = []
         for file_path in intermediate_file_paths:
+            file_path = self.filter_sp500(save_path, file_path, total_constituents_path, constituents_metadata_path)
             self.convert_timestamps_to_strings(file_path)
+            filtered_paths.append(file_path)
+                
         self.spark.conf.set("spark.sql.caseSensitive", "true")
-        df = self.spark.read.parquet(*intermediate_file_paths)
+        df = self.spark.read.parquet(*filtered_paths)
         df = df.fillna(0.0)
         dtm_save_path = os.path.join(save_path, 'dtm')
         os.makedirs(dtm_save_path, exist_ok=True)
         df.coalesce(1).write.parquet(dtm_save_path, mode='overwrite')
         print(f"Combined Parquet file saved to {save_path}")
+        
+    def filter_sp500(self, save_folder, file_path, total_constituents_path, constituents_metadata_path):
+        """
+        Filter out the SP500 whose firms are not active each year   
+        """
+        # hard-coded years where you are interested in
+        start = 2006
+        end = 2023
+        #Temp
+        match = re.search(r'batch_(\d+)', file_path)
+        batch_number = int(match.group(1))
+        save_folder = os.path.join(save_folder, 'filtered')
+        os.makedirs(save_folder, exist_ok=True)
+        
 
+        # Load the data
+        # Assuming sp500_constituents.csv has columns: 'Firm', 'EntryDate', 'ExitDate'
+        df = pd.read_csv(constituents_metadata_path)
+
+        # Convert date columns to datetime format
+        df['start'] = pd.to_datetime(df['start'], errors='coerce')
+        df['ending'] = pd.to_datetime(df['ending'], errors='coerce')
+        df['nameendt'] = pd.to_datetime(df['nameendt'], errors='coerce')
+        
+        # Define the range of years we are interested in
+        years = range(start, end + 1)
+
+        # Dictionary to hold the yearly snapshots
+        sp500_by_year = {}
+        permno_to_ticker = {}
+        for year in years:
+            # Define the start and end of each year
+            start_of_year = datetime.datetime(year, 1, 1)
+            end_of_year = datetime.datetime(year, 12, 31)
+            
+            # Filter firms active during the year, ensuring they only appear once per year by permno
+            active_firms = df[
+                (df['start'] <= end_of_year) & 
+                ((df['ending'].isna()) | (df['ending'] >= start_of_year))
+            ]
+            
+            # Get the last entry(nameendt) for each permno, and remove permno duplicate except the last entry of active_firms
+            active_firms = active_firms.sort_values(by=['permno', 'nameendt']).groupby('permno').last().reset_index()
+
+            # Convert the resulting DataFrame of firms to a list of unique permnos
+            permno_to_ticker = dict(zip(active_firms['permno'], active_firms['ticker']))
+
+            # Store the list of active firms for the year
+            sp500_by_year[year] = permno_to_ticker
+            
+        # Get CIK constituents for the SP500 from local cik meta data
+        sp500_ciks_df = pd.read_csv(total_constituents_path)
+        
+        # Change pernmo to CIK
+        reversed_dict = {}
+        for year, firms in sp500_by_year.items():
+            reversed_dict[year] = {ticker: pernmo for pernmo, ticker in sp500_by_year[year].items()}
+            for _, ticker in sp500_by_year[year].items():
+                if ticker in sp500_ciks_df["Symbol"].tolist():
+                    cik = sp500_ciks_df[sp500_ciks_df["Symbol"] == ticker]["CIK"].values[0]
+                    reversed_dict[year][ticker] = cik
+        sp500_by_year = reversed_dict.copy()
+        
+        # Load the intermediate Parquet file to be filtered 
+        sp500_dtm = pd.read_parquet(file_path)
+        sp500_dtm["Date"] = pd.to_datetime(sp500_dtm["Date"], errors="coerce") 
+        sp500_dtm['Year'] = sp500_dtm["Date"].dt.year
+
+        # Create a set of valid CIK-Year pairs
+        valid_pairs = set()
+        for year, firms in sp500_by_year.items():
+            for cik in firms.values():
+                cik = str(cik).zfill(10)
+                valid_pairs.add((year, cik))
+        valid_years = [year for year, _ in valid_pairs]
+        # Filter out the data based on valid CIK-Year pairs
+        df_filtered = sp500_dtm[
+            (~sp500_dtm["Year"].isin(valid_years)) |  # Keep rows where Year is not in valid_pairs
+            (sp500_dtm.apply(lambda row: (row["Year"], row["_cik"]) in valid_pairs, axis=1))  # Filter only if Year exists in valid_pairs
+        ]
+        df_filtered = df_filtered.drop(columns=["Year"])
+        save_folder = os.path.join(save_folder, f"batch_filtered_{batch_number}.parquet")
+        df_filtered.to_parquet(save_folder, index=False)
+        print(f"Filtered data saved to {save_folder}")
+        return save_folder
+        
 # Example Usage
 if __name__ == "__main__":
     # Initialize Spark session
@@ -560,38 +678,48 @@ if __name__ == "__main__":
     )
 
     # Define input parameters
-    # Test
-    data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
-    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/test_analaysis_reports"
-    firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test_constituents.csv"
+    # # Test
+    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports/test"
+    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test.csv"
     
-    # # Load
-    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/analysis_reports"
-    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports"
-    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
+    # # # Load
+    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/non_overlap_nasdaq_analysis_reports"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/non_overlap_nasdaq_analysis_reports"
+    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv"
     
-    # # Load 2006
-    # data_folder = "/Users/apple/PROJECT/Code_4_SECfilings/total_sp500_10q-txt-2006"
-    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/10Q-2006"
-    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.csv"
+    # Load 2
+    data_folder = "/Users/apple/PROJECT/Code_4_transcripts/transcripts_ninjaAPI"
+    save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/transcripts_ninjaAPI"
+    firms_csv_file_path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.final.csv'
     
-    firms_df = pd.read_csv(firms_csv_file_path)
-    firms_df['CIK'] = firms_df['CIK'].apply(lambda x: str(x).zfill(10))
-    firms_dict = firms_df.set_index('Symbol')['CIK'].to_dict()
-    firms_dict = {value: key for key, value in firms_dict.items()}
     
-    firms_ciks = list(firms_dict.keys())
     columns = ["Name", "CIK", "Date", "Body"]
     start_date = '2000-01-01'
     end_date = '2026-01-01'
 
     # Create pipeline and execute tasks
-    pipeline = ConstructDTM(spark, data_folder, save_folder, firms_dict, firms_ciks, columns, start_date, end_date)
-    # Aggregation Parallelism
-    # pipeline.parallel_processing(spark)
+    pipeline = ConstructDTM(spark, data_folder, save_folder, firms_csv_file_path, columns, start_date, end_date)
+
+    start_time_1 = time.time()
     pipeline.file_aggregator()
-    # pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date)
-    # pipeline.concatenate_parquet_files(save_path=save_folder)
+    end_time_1 = time.time()
+    
+    
+    start_time_2 = time.time()
+    pipeline.process_filings_for_cik_spark(save_folder, start_date, end_date, firms_csv_file_path)
+    end_time_2 = time.time()
+    
+    
+    start_time_3 = time.time()
+    constituents_metadata_path = "../Code_4_SECfilings/sp500_constituents.csv" # This is for getting the CIKs for the SP500, but only for the year 2006 - 2023
+    pipeline.concatenate_parquet_files(save_folder, firms_csv_file_path, constituents_metadata_path)
+    end_time_3 = time.time()
+    
+    print(f"Time taken to run file_aggregator: {end_time_1 - start_time_1} seconds")
+    print(f"Time taken to run process_filings_for_cik_spark: {end_time_2 - start_time_2} seconds")
+    print(f"Time taken to run concatnation: {end_time_3 - start_time_3} seconds")
+
     # pipeline.aggregate_data(files_path=save_folder, firms_ciks=firms_ciks)
 
 
