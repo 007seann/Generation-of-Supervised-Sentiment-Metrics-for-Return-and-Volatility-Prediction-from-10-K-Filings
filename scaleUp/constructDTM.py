@@ -167,16 +167,13 @@ class ConstructDTM:
                     for f in os.listdir(cik_path)
                     if os.path.isfile(os.path.join(cik_path, f)) and not f.endswith(".DS_Store")
                 ]
-            print("all_files", all_files)
+
             # Fetch metadata from PostgreSQL
             db_files_deleted = session.query(FileMetadata).filter(FileMetadata.is_deleted == True, FileMetadata.cik == cik).all()
             db_files_deleted_map = {record.file_path: record for record in db_files_deleted}
             db_files = session.query(FileMetadata).filter(FileMetadata.is_deleted == False, FileMetadata.cik == cik).all()
             db_file_map = {record.file_path: record for record in db_files}
 
-            print("######################")
-            print("db_file_map", db_file_map)
-            
             # Detect new and updated files
             for file_path in all_files:
                 file_hash = self.compute_file_hash(file_path)
@@ -228,7 +225,6 @@ class ConstructDTM:
             session.close()
         
 
-        
         return newly_added_or_changed
     
     def import_json(self, file_path):
@@ -255,18 +251,16 @@ class ConstructDTM:
                 continue
             attributes = json_content.get("data", {}).get("attributes", {})
             
-            if not attributes:
+            if attributes:
+                body = attributes.get("content", {})
+                date_str = attributes.get("publishOn", {})
+                date_str = date_str[:10]
+                new_data.append((symbol, cik, date_str, body))
+            else:
                 body = json_content.get("transcript", {})
                 date_str = json_content.get("date", {})
                 date_str = date_str[:10]
                 new_data.append((symbol, cik, date_str, body))
-                return new_data
-            body = attributes.get("content", {})
-            date_str = attributes.get("publishOn", {})
-            date_str = date_str[:10]
-
-            
-            new_data.append((symbol, cik, date_str, body))
             
         return new_data
 
@@ -679,19 +673,15 @@ if __name__ == "__main__":
 
     # Define input parameters
     # # Test
-    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/test"
-    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/analysis_reports/test"
+    # data_folder = "/Users/apple/PROJECT/Code_4_transcripts/ninja_test"
+    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/transcripts_ninjaAPI_test"
     # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/test.csv"
     
-    # # # Load
-    # data_folder = "/Users/apple/PROJECT/Code_4_analaysis_reports/non_overlap_nasdaq_analysis_reports"
-    # save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/non_overlap_nasdaq_analysis_reports"
-    # firms_csv_file_path = "/Users/apple/PROJECT/Code_4_SECfilings/QQQ_constituents.csv"
     
     # Load 2
     data_folder = "/Users/apple/PROJECT/Code_4_transcripts/transcripts_ninjaAPI"
     save_folder = "/Users/apple/PROJECT/hons_project/data/SP500/transcripts_ninjaAPI"
-    firms_csv_file_path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents.final.csv'
+    firms_csv_file_path = '/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents_final.csv'
     
     
     columns = ["Name", "CIK", "Date", "Body"]

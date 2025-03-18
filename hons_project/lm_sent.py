@@ -8,7 +8,7 @@ Updated on The Feb 18
 import pandas as pd
 import os
 SAVE_PATH = "./data/SP500/LM/transcripts"
-input_path = "./data/SP500/transcripts/dtm/transcripts_DTM_SP500.parquet"
+input_path = "./data/SP500/transcripts_ninjaAPI/dtm/transcripts_DTM_SP500.parquet"
 
 lm = pd.read_csv("LM_dict.csv")
 lm = lm[['Word','Negative','Positive','Uncertainty']]

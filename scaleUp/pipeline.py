@@ -103,7 +103,6 @@ def run_process_for_cik(cik, save_folder, folder_path, start_date, end_date, db_
     try:
         # 1. Fetch existing file metadata from PostgreSQL
         existing_files = session.query(FileMetadata).filter(FileMetadata.file_path.like(f"{cik_folder}%")).all()
-        print('existing_files', existing_files)
         existing_metadata = {f.file_path: f for f in existing_files}
         # 2. Identify all parquet files
         all_files = [

@@ -54,7 +54,7 @@ fig_loc = f'./outcome/figures_df_{DATA}'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
     
-input_path = "./data/SP500/transcripts/dtm/transcripts_DTM_SP500.parquet"
+input_path = "./data/SP500/transcripts_ninjaAPI/dtm/transcripts_DTM_SP500_2.parquet"
 dataset = pq.ParquetDataset(input_path)
 table = dataset.read()
 df_all = table.to_pandas()
