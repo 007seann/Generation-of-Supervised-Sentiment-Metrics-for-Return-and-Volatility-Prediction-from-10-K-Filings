@@ -11,7 +11,7 @@ import pandas as pd
 import datetime as dt
 from time_log_decorator import time_log
 
-import yfinance as yf
+
 
 
 def transform_parquet_to_yf_format(parquet_path):
@@ -43,11 +43,7 @@ def transform_parquet_to_yf_format(parquet_path):
 def vol_reader(comp, firms_dict, start_date=None, end_date=None):
     price_data_path = "../data/stock_price_daily.parquet"
     stock = firms_dict[comp]
-    # print(f'Downloading {stock} stock data')
-    # time_series = yf.download(stock, 
-    #                         start = start_date,
-    #                         end = end_date,
-    #                         progress = False)
+
     price_df = transform_parquet_to_yf_format(price_data_path)
 
     time_series = price_df[price_df['Symbol'] == stock]

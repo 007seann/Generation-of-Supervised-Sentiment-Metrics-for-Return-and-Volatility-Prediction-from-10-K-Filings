@@ -42,15 +42,20 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
     
     if alpha_low == None:
         alpha_low = alpha_high
-    
+
     ts = DD[dep]
+
     N = DD.shape[0] 
     
     DD_doc = DD.drop(columns=['_cik', '_ret', '_vol', '_ret+1', '_vol+1'])
     DD_doc = DD_doc.astype(pd.SparseDtype('int', 0))
+    print("DD_doc.shape", DD_doc.shape)
+    print("DD_doc", DD_doc)
         
     term_occur = (DD_doc > 0).sum(axis=0)
+    print("term_occur", term_occur)
     min_occur = term_occur.quantile(q=kappa)
+
 
     if pprint:
         print(f'Removing terms occuring in < {int(min_occur)} reports')
@@ -73,6 +78,8 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
             mean_vol = ts.median()
     else:
         mean_vol = 0
+        
+
     # mean_vol = ts.median()
     high_vol = ts > mean_vol
     
@@ -85,6 +92,7 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
     arts_incl_term = (DD_doc > 0).astype('int8')
     cooc_high = (arts_incl_term.T @ high_vol.values.astype('int8')) /arts_incl_term.sum(axis=0)
     
+
     # Selecting words
     ind_high = np.argsort(-cooc_high)[:alpha_high]
     ind_low = np.argsort(cooc_high)[:alpha_low]
@@ -103,6 +111,8 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
         
     # LEARNING SENTIMENT TOPICS
     D_title = DD_doc[sent_words]
+    
+
     assert (D_title > 0).sum(axis=0).min() >= min_occur, 'Term with too few occurences remaining!'
     s_hat = D_title.sum(axis=1)
     if pprint:
@@ -118,8 +128,8 @@ def train_model(DD, dep, kappa, alpha_high, alpha_low = None, pprint = False, vo
         ranks = np.empty_like(temp)
         ranks[temp] = np.arange(N)
         p_hat = ranks / N + 1/N
+
     W_hat = np.vstack((p_hat, 1-p_hat))
-    
     # Estimating 0 by regressing D_title on W_hat
     O_hat = np.linalg.lstsq(W_hat.T, D_hat, rcond=None)[0].T
     
@@ -151,10 +161,11 @@ def predict_sent(model, arts, llambda):
         Estimated sentiment score of given article.
 
     """
+
     S_hat = model[0]
     O_hat = model[1]
     N = arts.shape[0]
-    
+
     DD = arts[S_hat]
     s_hat = np.sum(DD, axis=1)
     def p_fun(p, DD_i):
@@ -172,7 +183,7 @@ def predict_sent(model, arts, llambda):
             res = minimize(p_fun, args=(np.array(DD.iloc[[i]])), x0=0.5, method='SLSQP', bounds=[(1e-5,1-1e-5)])
             assert res.success, 'p_hat not coveraged'
             p_hat[i] = res.x[0]
-            
+
     return p_hat
             
 @time_log

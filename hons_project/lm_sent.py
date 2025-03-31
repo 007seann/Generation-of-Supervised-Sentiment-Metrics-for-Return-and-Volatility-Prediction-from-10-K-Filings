@@ -7,8 +7,8 @@ Updated on The Feb 18
 """
 import pandas as pd
 import os
-SAVE_PATH = "./data/SP500/LM/transcripts"
-input_path = "./data/SP500/transcripts_ninjaAPI/dtm/transcripts_DTM_SP500.parquet"
+SAVE_PATH = "./data/SP500/LM/analysis_reports_summary"
+input_path = "./data/SP500/analysis_reports_summary/dtm/analysis_report_summary.parquet"
 
 lm = pd.read_csv("LM_dict.csv")
 lm = lm[['Word','Negative','Positive','Uncertainty']]
@@ -36,7 +36,8 @@ lm_df = pd.concat([pd.Series(1, index = pos_words), pd.Series(-1, index=neg_word
 #                     '0001045810', '0001318605', '0001652044', '0000909832']
 
 # Read firms' ciks
-constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
+# constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
+constituents_path = "/Users/apple/PROJECT/Code_4_SECfilings/sp500_total_constituents_final.csv"
 firms_df = pd.read_csv(constituents_path)
 columns_to_drop = ['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded']
 firms_df = firms_df.drop(columns=columns_to_drop, errors='ignore')
@@ -118,7 +119,7 @@ df = processing_LM(firms_ciks, input_path)
 df = df.rename(columns={0:'_lm'})
 # df = df.drop_duplicates()
 df = df.reset_index().rename(columns={'index':'Date'})
-df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_transcripts_SP500.parquet'))
+df.to_parquet(os.path.join(SAVE_PATH,f'lm_sent_analysis_report_summary.parquet'))
 
     
 
