@@ -9,8 +9,9 @@ Created on Fri Dec 2023
 import numpy as np
 import pandas as pd
 import datetime as dt
+from time_log_decorator import time_log
 
-import yfinance as yf
+
 
 
 def transform_parquet_to_yf_format(parquet_path):
@@ -42,11 +43,7 @@ def transform_parquet_to_yf_format(parquet_path):
 def vol_reader(comp, firms_dict, start_date=None, end_date=None):
     price_data_path = "../data/stock_price_daily.parquet"
     stock = firms_dict[comp]
-    # print(f'Downloading {stock} stock data')
-    # time_series = yf.download(stock, 
-    #                         start = start_date,
-    #                         end = end_date,
-    #                         progress = False)
+
     price_df = transform_parquet_to_yf_format(price_data_path)
 
     time_series = price_df[price_df['Symbol'] == stock]
@@ -84,7 +81,7 @@ def vol_reader(comp, firms_dict, start_date=None, end_date=None):
 
 def vol_reader2(comps, firms_dict, start_date, end_date, window = None, extra_end = False, extra_start = False, AR = None):
     def ret_fun(xt_1, xt): # log difference
-        return np.log(xt_1/xt) ### used to xt/xt_1
+        return np.log(xt/xt_1) ### used to xt/xt_1
     price_data_path = "../data/stock_price_daily.parquet"
     price_df = transform_parquet_to_yf_format(price_data_path)
     ts = []
@@ -101,6 +98,7 @@ def vol_reader2(comps, firms_dict, start_date, end_date, window = None, extra_en
             start_date = str(dt.datetime.strptime(start_date, '%Y-%m-%d')-dt.timedelta(days=window + 1))[:10]
             
     for cc in comps:
+        print("Processing", cc)
         stock = firms_dict[cc]
         time_series = price_df[price_df['Symbol'] == stock]
         time_series = time_series.loc[start_date:end_date]
@@ -192,6 +190,104 @@ def vol_reader2(comps, firms_dict, start_date, end_date, window = None, extra_en
 
     return df_ret, df_vol
     
+@time_log
+def vol_reader_vectorised(comps, firms_dict, start_date, end_date, window=None, extra_end=False, extra_start=False, AR=None):
+    def ret_fun(xt_1, xt):
+        return np.log(xt / xt_1)  # Log returns
+    
+    # File path
+    price_data_path = "../data/stock_price_daily.parquet"
+    price_df = transform_parquet_to_yf_format(price_data_path)
+
+    # Extend date range if needed
+    start_dt, end_dt = dt.datetime.strptime(start_date, '%Y-%m-%d'), dt.datetime.strptime(end_date, '%Y-%m-%d')
+    if extra_end:
+        end_dt += dt.timedelta(days=(window + 3) if window else 1)
+    if extra_start and window:
+        start_dt -= dt.timedelta(days=(window * AR + 1) if AR else (window + 1))
+    
+    # Convert back to string format
+    start_date, end_date = start_dt.strftime('%Y-%m-%d'), end_dt.strftime('%Y-%m-%d')
+
+    # Get the stock symbols for given companies
+    stocks = [firms_dict[cc] for cc in comps if cc in firms_dict]
+    
+    # Efficient filtering: pre-filter stock prices by date and relevant symbols
+    filtered_df = price_df.loc[
+        (price_df['Symbol'].isin(stocks)) & (price_df.index >= start_date) & (price_df.index <= end_date)
+    ]
+    
+    # Group by symbol for efficient lookup
+    grouped = filtered_df.groupby('Symbol')
+
+    # Store time series data
+    ts_dict = {}
+    empty = set()
+
+    for cc in comps:
+        stock = firms_dict.get(cc)
+        if stock and stock in grouped.groups:
+            ts_dict[cc] = grouped.get_group(stock)
+        else:
+            print(f'{stock} data is empty')
+            empty.add(cc)
+
+    # Remove empty companies from the list
+    comps = list(set(comps) - empty)
+
+    # Volatility proxy calculations
+    def vol_proxy(ret, proxy):
+        proxies = {'squared return', 'realized', 'daily-range', 'return'}
+        assert proxy in proxies, f'Proxy should be one of {proxies}'
+        
+        if proxy == 'realized':
+            raise NotImplementedError('Realized volatility proxy not yet implemented')
+        elif proxy == 'daily-range':
+            ran = np.log(ret['High']) - np.log(ret['Low'])
+            adj_factor = 4 * np.log(2)
+            return np.square(ran) / adj_factor
+        elif proxy == 'return':
+            return ret_fun(ret['Open'], ret['Close'])
+        else:
+            raise NotImplementedError('Squared return proxy not yet implemented')
+
+    def vol_proxy_window(ret, proxy, window):
+        proxies = {'squared return', 'realized', 'daily-range', 'return'}
+        assert proxy in proxies, f'Proxy should be one of {proxies}'
+        
+        if proxy == 'return':
+            t1 = ret.index + pd.DateOffset(days=window - 1)
+            t1 = [ret.index[ret.index.get_indexer([t], method='pad')[0]] for t in t1]
+            ret1 = ret.loc[t1]
+            ret1.index = ret.index
+            return ret_fun(ret['Open'], ret1['Close'])
+        
+        elif proxy == 'realized':
+            daily_ran_sq = (np.log(ret['High']) - np.log(ret['Low']))**2 / (4 * np.log(2))
+            return daily_ran_sq.rolling(window=window, min_periods=1).mean()
+        
+        else:
+            raise NotImplementedError('Proxy not introduced yet')
+
+    # Compute returns and volatilities
+    ret_list, vol_list = [], []
+    
+    if window:
+        assert isinstance(window, int) and window > 0, 'Incorrect window specified'
+        for cc in comps:
+            ret_list.append(vol_proxy_window(ts_dict[cc], 'return', window).to_frame())
+            vol_list.append(vol_proxy_window(ts_dict[cc], 'realized', window).to_frame())
+    else:
+        for cc in comps:
+            ret_list.append(vol_proxy(ts_dict[cc], 'return').to_frame())
+            vol_list.append(vol_proxy(ts_dict[cc], 'daily-range').to_frame())
+
+    # Concatenate and clean data
+    df_ret = pd.concat(ret_list, axis=1, keys=comps).bfill().dropna()
+    df_vol = pd.concat(vol_list, axis=1, keys=comps).bfill().dropna()
+
+    return df_ret, df_vol
+
 
 def price_reader(comps, firms_dict, start_date, end_date):
     price_data_path = "../data/stock_price_daily.parquet"

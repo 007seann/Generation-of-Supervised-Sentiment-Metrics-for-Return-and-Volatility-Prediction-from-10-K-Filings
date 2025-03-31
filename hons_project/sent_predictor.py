@@ -13,7 +13,7 @@ os.chdir('/Users/apple/PROJECT/hons_project')
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime
 import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
 import seaborn as sns
@@ -23,14 +23,15 @@ from time_log_decorator import time_log
 import pyarrow.parquet as pq
 
 from model import train_model, predict_sent, loss, loss_perc, kalman
-from vol_reader_fun import vol_reader2, price_reader, vol_reader
+from vol_reader_fun import price_reader
 
-
+import pickle
 
 
 ############################ #%% Sector level ############################
 
-constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
+# constituents_path =  "../Code_4_SECfilings/sp500_total_constituents_final.csv"
+constituents_path =  "/Users/apple/PROJECT/hons_project/data/SP500/nvidia/nvidia_constituents_final.csv"
 firms_df = pd.read_csv(constituents_path)
 columns_to_drop = ['Security', 'GICS Sector', 'GICS Sub-Industry', 'Headquarters Location', 'Date added', 'Founded']
 firms_df = firms_df.drop(columns=columns_to_drop, errors='ignore')
@@ -43,18 +44,20 @@ firms_ciks = list(firms_dict.keys())
 weights_file_path =  "../Code_4_SECfilings/sp500_2025_weights.csv"
 weight_df = pd.read_csv(weights_file_path)
 comp_to_weight_value = pd.Series(weight_df.Weight.values, index=weight_df.CIK).to_dict()
-comp_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.items()}
+cik_to_weight_value = {str(k).zfill(10) : v for k, v in comp_to_weight_value.items()}
+cik_to_weight_value = {k: float(v.strip('%')) for k , v in cik_to_weight_value.items() }
 NAME = 'US Market'
 TEMP = 'S&P 500'
-DATA = 'transcripts'
-PORT = 'equal' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
+DATA = 'analysis_report_summary'
+PORT = 'index' # 'value' or 'equal'. 'equal' is for a single firm only. 'value' is for a sector portfolio. You should controls allocaiton proporitons.
 # What if just get SP500 historical data, and put and compare them?
 
-fig_loc = f'./outcome/figures_df_{DATA}'
+fig_loc = f'./outcome/tesla/figures_df_{DATA}_3'
 if not os.path.exists(fig_loc):
     os.makedirs(fig_loc)
     
-input_path = "./data/SP500/transcripts/dtm/transcripts_DTM_SP500.parquet"
+# input_path = "./data/SP500/analysis_reports_summary/dtm/analysis_report_summary.parquet"
+input_path = "/Users/apple/PROJECT/hons_project/data/SP500/nvidia/SEC/dtm_0001045810_2.parquet"
 dataset = pq.ParquetDataset(input_path)
 table = dataset.read()
 df_all = table.to_pandas()
@@ -65,7 +68,11 @@ df_all = df_all.set_index('Date')
 df_all.index = pd.to_datetime(df_all.index, utc=True)
 df_all.index = df_all.index.to_series().dt.strftime('%Y-%m-%d')
 df_all['_ret'] = df_all['_ret']/100
+df_all = df_all.fillna(0.0)
+
+
 input_path = "./data/SP500/LM/transcripts/lm_sent_transcripts_SP500.parquet"
+input_path = "./data/SP500/LM/analysis_reports_summary/lm_sent_analysis_report_summary.parquet"
 dataset = pq.ParquetDataset(input_path)
 table = dataset.read()
 lm_sent = table.to_pandas()
@@ -75,10 +82,11 @@ lm_sent = lm_sent.drop(columns=["index"], errors='ignore')
 lm_sent = lm_sent.set_index('Date')
 lm_sent.index = pd.to_datetime(lm_sent.index, utc=True)
 lm_sent.index = lm_sent.index.to_series().dt.strftime('%Y-%m-%d')
-# print('length check', len(lm_sent), len(df_all))
-# print('lm_sent', lm_sent)
-# print('df_all', df_all)
-assert all(lm_sent.index == df_all.index) and all(lm_sent['_cik'] == df_all['_cik'])
+lm_sent = lm_sent.fillna(0.0)
+
+# print('lm_sent', len(lm_sent['_cik']))
+# print('df_all', len(df_all['_cik']))
+# assert all(lm_sent.index == df_all.index) and all(lm_sent['_cik'] == df_all['_cik'])
 
 
 ############################ #%% Portfolio level ############################
@@ -157,9 +165,15 @@ def adj_kappa(k, k_min = 0.85):
     return 1-(1-k)/(1-k_min)
 
 #%% INPUT
-start_date = '2006-01-01'
-end_date = '2024-12-31'
-trn_window = ['2006-01-01', '2024-12-31']
+# start_date = '2006-01-01'
+# end_date = '2024-12-31'
+# trn_window = ['2006-01-01', '2024-12-31']
+# val_window = ['2020-01-01', '2024-12-31']
+# window = ['2006-01-01', '2024-12-31']
+
+start_date = '2025-01-01'
+end_date = datetime.now().strftime('%Y-%m-%d')
+trn_window = [start_date, end_date]
 val_window = ['2020-01-01', '2024-12-31']
 window = ['2006-01-01', '2024-12-31']
 
@@ -173,13 +187,17 @@ llambda = 0.1 # Prenalty to shrink estimated sentiment towards 0.5 (i.e neutral)
 
 # Train model
 df_trn = df_all.sort_index()[:f'{trn_window[1]}']
+
 df_val = df_all.sort_index()[val_window[0]:val_window[1]]
 t0 = time.time()
 for dep in ['_ret', '_vol']:
     
     if dep == '_ret':
+
         mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False)
+
         S_pos_ret, S_neg_ret = mod[0][:alpha_high], mod[0][alpha_high:]
+
         mod_ret = mod
     else:
         mod = train_model(df_trn, dep, kappa, alpha_high, pprint = False, vol_q = None)
@@ -193,6 +211,9 @@ for dep in ['_ret', '_vol']:
     train_y = train_set[dep]
 
     preds = predict_sent(mod, train_arts, llambda)
+    print('preds', preds)
+    print('len(preds)', len(preds))
+    exit()
 
     
     print(f'All estimated sentiments in [{round(preds.min(),3)},{round(preds.max(), 3)}]')
@@ -256,28 +277,6 @@ def rescale(x, unit=True):
     else:
         return (x - x.mean() + 0.5)
     
-    
-# Plotting portfolio
-dfts, firms_ciks = price_reader(firms_ciks, firms_dict, trn_window[0], trn_window[1])
-
-print('--- Constructing portfolio ---')
-if PORT == 'equal':
-    port_val = dfts.mean(axis=1)
-
-    print("Hi you are using equal portfolio")
-
-    
-else:
-    if PORT == 'value':
-        port_weights = np.array([comp_to_weight_value[c] for c in firms_ciks])
-        port_weights = port_weights/sum(port_weights)
-        weight_ret = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
-        port_val = dfts.dot(weight_ret[0])
-
-        print("Hi you are using value portfolio")
-
-
-    
 # Ret sentiments
 
 print(f'% of neutral sentiments RET: {round((mod_sent_ret == 0.5).sum()/len(mod_sent_ret) * 100, 2)}')
@@ -300,7 +299,6 @@ mod_kal_vol.to_csv(f'{fig_loc}/mod_kal_vol.csv')
 
 # LM sentiments
 
-print("length check", lm_sent['_lm'].sort_index())
 lm_trn = lm_sent['_lm'].sort_index()[:f'{trn_window[1]}']
 
 print(f'% of netural sentiments LM: {round(lm_trn == 0).sum()/len(lm_trn) * 100, 2}')
@@ -312,36 +310,92 @@ lm_kal = kalman(lm_avg, smooth=True)
 lm_avg.to_csv(f'{fig_loc}/lm_avg.csv')
 lm_kal.to_csv(f'{fig_loc}/lm_kal.csv')
 
+if PORT == 'equal' or PORT == 'value':    
 
-port_val = port_val.groupby(port_val.index).mean()
-mod_sent_ret = mod_sent_ret.groupby(mod_sent_ret.index).mean()
-mod_sent_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
-lm_trn = lm_trn.groupby(lm_trn.index).mean()
-port_val_aligned = port_val.reindex(mod_sent_ret.index)
-port_val_aligned.dropna(inplace=True)
+    # Plotting portfolio
+    if os.path.exists(f'{fig_loc}/dfts_price.parquet') and os.path.exists(f'{fig_loc}/firms_ciks.pkl'):
+        dfts = pd.read_parquet(f'{fig_loc}/dfts_price.parquet')
+        with open(f'{fig_loc}/firms_ciks.pkl', "rb") as f:
+            firms_ciks = pickle.load(f)
+    else:
+        dfts, firms_ciks = price_reader(firms_ciks, firms_dict, trn_window[0], trn_window[1])
+        dfts.to_parquet(f'{fig_loc}/dfts_price.parquet')
+        with open(f'{fig_loc}/firms_ciks.pkl', "wb") as f:
+            pickle.dump(firms_ciks, f)
+        
+    print('--- Constructing portfolio ---')
+    if PORT == 'equal':
+        port_val = dfts.mean(axis=1)
 
-sents = pd.concat([mod_sent_ret, mod_sent_vol, lm_trn, port_val_aligned], axis = 1)
-sents.columns = ['ret', 'vol', 'lm', 'stock']
+        print("Hi you are using equal portfolio")
+        
+    if PORT == 'value':
+        port_weights = np.array([cik_to_weight_value[c] for c in firms_ciks if c in cik_to_weight_value.keys()])
+        port_weights = port_weights/sum(port_weights)
+        weight_ret = pd.DataFrame(pd.Series(port_weights, index=dfts.columns, name=0))
+        port_val = dfts.dot(weight_ret[0])
+
+        print("Hi you are using value portfolio")
+        
+    port_val = port_val.groupby(port_val.index).mean()
+    mod_sent_ret = mod_sent_ret.groupby(mod_sent_ret.index).mean()
+    mod_sent_vol = mod_sent_vol.groupby(mod_sent_vol.index).mean()
+    lm_trn = lm_trn.groupby(lm_trn.index).mean()
+    port_val_aligned = port_val.reindex(mod_sent_ret.index)
+    port_val_aligned.dropna(inplace=True)
+
+    sents = pd.concat([mod_sent_ret, mod_sent_vol, lm_trn, port_val_aligned], axis = 1)
+    sents.columns = ['ret', 'vol', 'lm', 'stock']
 
 
-#pearson
-print('p_hat pearson correlation')
-print(sents.corr(method='pearson'))
+    #pearson
+    print('p_hat pearson correlation')
+    print(sents.corr(method='pearson'))
 
-sents_tilde = pd.concat([mod_kal_ret, mod_kal_vol, lm_kal, port_val_aligned], axis = 1)
-sents_tilde.columns = ['ret', 'vol', 'lm', 'stock']
+    sents_tilde = pd.concat([mod_kal_ret, mod_kal_vol, lm_kal, port_val_aligned], axis = 1)
+    sents_tilde.columns = ['ret', 'vol', 'lm', 'stock']
 
-# Save portfolio data points
-port_val.to_csv(f'{fig_loc}/port_val.csv')
+    # Save portfolio data points
+    port_val.to_csv(f'{fig_loc}/port_val.csv')
 
-# Save correlation data points
-sents.to_csv(f'{fig_loc}/sents.csv')
-sents_tilde.to_csv(f'{fig_loc}/sents_tilde.csv')
+    # Save correlation data points
+    sents.to_csv(f'{fig_loc}/sents.csv')
+    sents_tilde.to_csv(f'{fig_loc}/sents_tilde.csv')
 
-# Save other necessary data points
-port_val_aligned.to_csv(f'{fig_loc}/port_val_aligned.csv')
+    # Save other necessary data points
+    port_val_aligned.to_csv(f'{fig_loc}/port_val_aligned.csv')
 
+elif PORT == 'index':
+    # Plotting index
+    
+    # Upload index 
+    index_path = "/Users/apple/PROJECT/data/Macrotrends_sp500_index_daily.csv"
+    index = pd.read_csv(index_path, encoding="ISO-8859-1", skiprows=9)
+    index = index[index["Date"] >= "2004-01-01"]
+    index.rename(columns={"Closing Value": "index"}, inplace=True)
+    print("index", index )
+    # Convert Series to DataFrame and reset the index
+    mod_kal_ret = mod_kal_ret.reset_index()
+    mod_kal_vol = mod_kal_vol.reset_index()
+    lm_kal = lm_kal.reset_index()
 
 
     
+
+    # Assuming all DataFrames have a common column, such as 'Date'
+    sents_tilde = mod_kal_ret.merge(mod_kal_vol, on='Date', how='inner') \
+                            .merge(lm_kal, on='Date', how='inner') \
+                            .merge(index, on='Date', how='inner')
+
+    # Display the merged DataFrame
+    print("sents_tilde", sents_tilde)
     
+    print("sents_tilde", sents_tilde)
+    print("index", index )
+    sents_tilde.columns = ['Date', 'ret', 'vol', 'lm', 'index']
+
+    # Save portfolio data points
+    index.to_csv(f'{fig_loc}/sp500_index.csv')
+    # Save correlation data points
+    sents_tilde.to_csv(f'{fig_loc}/sents_index_tilde.csv')
+
