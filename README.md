@@ -1,6 +1,42 @@
 # Generation-of-Supervised-Sentiment-Metrics-for-Return-and-Volatility-Prediction-from-10-K-Filings
 This paper introduces an automated system that generates sentiment metrics to support the prediction of stock returns and volatility.
 
+
+## 1. Why did you start your project?
+
+This project was initiated to explore the predictive power of 10-K regulatory filings, especially the risk factor section (Item 1A), on stock return and volatility. Given the increasing reliance on unstructured textual data in financial markets, the goal was to develop a supervised learning framework that generates sentiment scores from 10-K filings to support investment strategies across firm, portfolio, and sector levels. Prior research had shown significant market reaction to such filings, but few had explored return *and* volatility prediction using a scalable, automated sentiment analysis pipeline.
+
+## 2. What issues did you find technically and in a domain context?
+
+### Domain Issues:
+- The risk factor disclosures in 10-Ks are known to be biased or overly generic due to managerial incentives.
+- Textual data is high-dimensional and noisy, making it difficult to extract actionable insights directly.
+
+### Technical Issues:
+- HTML parsing of unstructured 10-K documents, especially identifying and extracting the "Item 1A Risk Factors" section accurately.
+- Differentiating sentiment-charged vs. neutral words for supervised learning.
+- Calibrating the sentiment model to reflect both return and volatility—two fundamentally different financial targets.
+- Dealing with noise in time-series sentiment trends across the sector level.
+
+## 3. What solutions did you consider?
+
+- **Manual labeling vs. automatic supervised learning**: Manual labeling was ruled out due to cost and subjectivity. A supervised lexicon learning model based on returns/volatility was adopted .
+- **Deep learning (BERT) vs. transparent models**: Chose a transparent, lightweight statistical model over black-box deep learning to retain interpretability and speed.
+- **LM Dictionary vs. Model-Derived Lexicon**: While LM was used as a benchmark, the model derived its own sentiment lexicon directly from labeled return/volatility data.
+- **Raw scores vs. Smoothed metrics**: Applied the Kalman Filter to smooth time-series sector and portfolio sentiment data for better signal stability.
+
+## 4. What is your final decision among solutions?
+
+The final system comprises an end-to-end pipeline with:
+
+- **10-K Filing Extraction Model**: A scalable parser using regular expressions and HTML heuristics to extract both full text and Item 1A sections from EDGAR filings.
+- **Sentiment Score Prediction Model**: A supervised lexicon learning framework that estimates sentiment scores using returns and volatility as labels.
+- **Kalman Filter**: For smoothing sector- and portfolio-level sentiment trends.
+
+This approach generated 12 different sentiment metrics (3 levels × 2 sections × 2 labels), which were quantitatively evaluated using Pearson correlation and qualitatively via the most influential words. The solution balances interpretability, scalability, and financial relevance—pushing the frontier of sentiment-driven market prediction from regulatory filings.
+
+
+
 # Abstract
 This paper introduces an automated system that generates sentiment metrics to support the prediction of stock returns and volatility. It focuses on three key stakeholder levels: sector, portfolio, and firm. Our system consists of two main components: the SEC Filing Extraction Model and the Supervised Lexicon Learning Model(or the Sentiment Score Prediction Model). The SEC Filing Extraction Model is responsible for preprocessing SEC filings, facilitating seamless integration with the subsequent Supervised Lexicon Learning Model. The lexicon model operates through a fourstage process: (i) identification of sentiment-charged words via predictive filtering, (ii) assignment of prediction weights to these tokens using topic modelling techniques, (iii) estimation of the most probable sentiment score by aggregating the weighted tokens through penalised likelihood, and (iv) application of the Kalman Filter for sector or portfolio sentiment trend analysis. In our empirical study, we study one of the most comprehensive and essential documents about a public firm - 10-K filling, and its Item1A risk factor section. At the sector level, our 10-K-centred model outperforms our risk-factor-centred model in extracting return/volatility-predictive signals in the context. At the portfolio level, both models excel in identifying return/volatility-predictive signals within the context. We recommend, at the company level, the risk model for trend and correlation analysis while advising both models for word analysis.
 
